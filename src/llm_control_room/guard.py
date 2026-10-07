@@ -257,12 +257,26 @@ def _redact_encoded(text: str, patterns, findings: list[str]) -> str:
     return _TOKEN.sub(sub, text)
 
 
+def _squash(text: str) -> str:
+    """Collapse any run of whitespace to one space so ``project   orion`` still matches."""
+    return " ".join(text.split())
+
+
+def _term_pattern(terms) -> re.Pattern | None:
+    parts = [r"\s+".join(re.escape(w) for w in t.split()) for t in terms if t and t.strip()]
+    return re.compile("|".join(parts), re.I) if parts else None
+
+
 def term_findings(text: str, deny_terms) -> list[str]:
     """``policy:deny_term`` when any of a tenant's literal terms appears (any case, any look-alike)."""
     if not deny_terms:
         return []
-    f = fold(text)
-    return ["policy:deny_term"] if any(fold(t) and fold(t) in f for t in deny_terms) else []
+    f = _squash(fold(text))
+    return (
+        ["policy:deny_term"]
+        if any(_squash(fold(t)) and _squash(fold(t)) in f for t in deny_terms)
+        else []
+    )
 
 
 def screen(
@@ -290,8 +304,8 @@ def screen(
         return GuardResult(allowed=False, text=text, findings=hit)
     view = canon(text)
     findings: list[str] = []
-    if redact_terms:
-        pat = re.compile("|".join(re.escape(t) for t in redact_terms if t), re.I)
+    pat = _term_pattern(redact_terms) if redact_terms else None
+    if pat:
         if pat.search(view):
             findings.append("redacted:custom_term")
             view = pat.sub("[REDACTED_TERM]", view)

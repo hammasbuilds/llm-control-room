@@ -296,3 +296,5 @@ nav a.help:hover { background: var(--info-bg); }
 .tag { display: inline-block; font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); min-width: 46px; }
 textarea.droppable { transition: border-color var(--dur-base), background-color var(--dur-base), box-shadow var(--dur-base); }
 @media (max-width: 860px) { nav a.help { margin-left: 8px; } .step { grid-template-columns: 24px 1fr; } .dropzone { padding: 10px; } }
+
+.termfld { flex: 1 1 240px; min-width: 0; } .termfld > input { width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
