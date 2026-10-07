@@ -1,0 +1,6 @@
+30 seeds per scenario, 600 requests each over a simulated 24 hours
+
+scenario         kept  held  rolled back   expected
+canary-good        30     0            0   kept (30/30 as expected)
+canary-bad          0     0           30   rolled back (30/30 as expected)
+canary-outage       0    30            0   held (30/30 as expected)
