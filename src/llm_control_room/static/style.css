@@ -260,3 +260,39 @@ nav a.item:hover { transform: translateX(2px); }
 .fl.bad > label { color: var(--bad) !important; }
 @keyframes tick { from { opacity: 0; transform: rotate(45deg) scale(.3); } }
 @media (prefers-reduced-motion: reduce) { .fl.ok::after { animation: none; } .fl > label { transition: none; } }
+
+/* ---- uploads: drop zones, inline file loaders, batch results, About & Guide ---- */
+.dropzone { border: 2px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 8px; padding: 12px 14px; margin: 10px 0 4px;
+  background: color-mix(in srgb, var(--bg) 55%, var(--panel)); text-align: center; transition: border-color var(--dur-base), background-color var(--dur-base), box-shadow var(--dur-base); }
+.dropzone:hover, .dropzone:focus-visible { border-color: var(--accent); outline: none; }
+.dropzone.over, textarea.over { border-color: var(--accent); background: var(--info-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent), 0 0 18px var(--glow); }
+.dz-main { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.dz-types { font-size: 11.5px; margin-top: 2px; }
+.dz-bar { height: 5px; border-radius: 4px; background: var(--panel2); overflow: hidden; margin-top: 8px; }
+.dz-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--violet)); transition: width .15s linear; }
+.dz-msg { font-size: 12.5px; min-height: 1.2em; margin-top: 4px; overflow-wrap: anywhere; }
+.dz-msg.ok { color: var(--good); } .dz-msg.err { color: var(--bad); }
+.dz-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; font-size: 12px; }
+.dz-inline .dz-msg { margin: 0; flex-basis: 100%; }
+.hint { background: var(--info-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 11px; font-size: 12.5px; margin-bottom: 8px; }
+.hint code, .guide code { font-family: var(--mono); font-size: 11.5px; background: var(--panel2); padding: 0 4px; border-radius: 3px; overflow-wrap: anywhere; }
+.issues { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; }
+.issues.err { background: var(--bad-bg); color: var(--bad); } .issues ul { margin: 4px 0 0; padding-left: 18px; }
+.chips-row { margin-bottom: 8px; }
+label.chk { display: inline-flex; gap: 6px; align-items: center; margin: 4px 0; text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+details.imp { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 8px; }
+details.imp summary { cursor: pointer; color: var(--accent); font-family: var(--mono); font-size: 12.5px; }
+nav a.help { margin-left: auto; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--accent);
+  color: var(--accent); text-decoration: none; font: 700 13px var(--mono); flex: none; }
+nav a.help:hover { background: var(--info-bg); }
+.brand { position: relative; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; position: static; height: auto; padding: 0; background: none; border: 0; }
+.toc a { border: 1px solid var(--line); border-radius: 99px; padding: 2px 11px; font: 12px var(--mono); text-decoration: none; background: var(--panel); }
+.toc a:hover { border-color: var(--accent); }
+.guide { scroll-margin-top: 12px; max-width: 920px; }
+.guide p, .guide li { line-height: 1.6; } .guide ul.feat { padding-left: 18px; }
+.step { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 9px 0; border-top: 1px dashed var(--line); }
+.step .n { width: 24px; height: 24px; border-radius: 50%; background: var(--info-bg); color: var(--accent); font: 700 12px/24px var(--mono); text-align: center; }
+.tag { display: inline-block; font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); min-width: 46px; }
+textarea.droppable { transition: border-color var(--dur-base), background-color var(--dur-base), box-shadow var(--dur-base); }
+@media (max-width: 860px) { nav a.help { margin-left: 8px; } .step { grid-template-columns: 24px 1fr; } .dropzone { padding: 10px; } }

@@ -86,6 +86,10 @@ class Tenants:
         for cb in self.on_change:
             cb(name)
 
+    def check_policy(self, policy: dict) -> None:
+        """Raise TenantError if the policy would be refused, without writing anything."""
+        _validate(policy)
+
     def create(self, name: str, **policy) -> dict:
         if not NAME_RE.match(name or ""):
             raise TenantError("name must be lowercase letters, digits, - or _ (max 40)")

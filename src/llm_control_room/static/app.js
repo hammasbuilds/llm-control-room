@@ -113,10 +113,10 @@ const PAGES = [
   ["routing", "Router", "M4 6h6a4 4 0 014 4v8M14 18h6"], ["observability", "Observability", "M4 19V9m6 10V5m6 14v-7m4 7H2"],
   ["releases", "Releases", "M12 3v6m0 0l-4 4m4-4l4 4M5 21h14"], ["agents", "Agent runs", "M12 8V4m-6 8H2m20 0h-4M7 17l-3 3m16 0l-3-3M12 20v-4m0-4a2 2 0 100 0z"],
   ["sandbox", "Sandbox", "M4 7l8-4 8 4v10l-8 4-8-4z"], ["tenants", "Tenants and keys", "M17 20v-2a4 4 0 00-4-4H7a4 4 0 00-4 4v2m10-12a4 4 0 11-8 0 4 4 0 018 0z"],
-  ["simulator", "Simulator", "M4 18l5-6 4 4 7-9"],
+  ["simulator", "Simulator", "M4 18l5-6 4 4 7-9"], ["about", "About and guide", "M12 17v-6m0-3h.01M3 12a9 9 0 1018 0 9 9 0 00-18 0z"],
 ];
 function renderNav(active) {
-  $("#nav").innerHTML = `<div class="brand"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#e040fb"/></linearGradient></defs><rect width="64" height="64" rx="12" fill="#050914"/><rect x="2" y="2" width="60" height="60" rx="10" fill="none" stroke="url(#lg)" stroke-width="2.5"/><circle cx="32" cy="34" r="17" fill="none" stroke="#1d2a52" stroke-width="3"/><path d="M15 36h9l4-11 7 20 4-9h10" fill="none" stroke="url(#lg)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="32" cy="12" r="3" fill="#b8ff3d"/></svg><span>LLM Control Room<small>MISSION CONTROL</small></span></div>` +
+  $("#nav").innerHTML = `<div class="brand"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#e040fb"/></linearGradient></defs><rect width="64" height="64" rx="12" fill="#050914"/><rect x="2" y="2" width="60" height="60" rx="10" fill="none" stroke="url(#lg)" stroke-width="2.5"/><circle cx="32" cy="34" r="17" fill="none" stroke="#1d2a52" stroke-width="3"/><path d="M15 36h9l4-11 7 20 4-9h10" fill="none" stroke="url(#lg)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="32" cy="12" r="3" fill="#b8ff3d"/></svg><span>LLM Control Room<small>MISSION CONTROL</small></span><a class="help" href="#/about" aria-label="Help and guide" title="Help and guide">?</a></div>` +
     PAGES.map(([id, name, d]) => `<a class="item ${id === active ? "active" : ""}" href="#/${id}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>${name}</a>`).join("") +
     `<div class="foot"><button class="sm" id="theme">Toggle light / dark</button><div style="margin-top:8px">${S.meta ? `v${esc(S.meta.version)}<br>${S.meta.real_providers.length ? "Real providers: " + esc(S.meta.real_providers.join(", ")) : "Mock provider only"}` : ""}</div></div>`;
   $("#theme").onclick = () => { const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); const nx = cur === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = nx; localStorage.setItem("lcr-theme", nx); };
@@ -214,7 +214,7 @@ routes.overview = async (el) => {
       <div class="card"><h2>Routing: model share</h2>${bars(Object.entries(r.report.by_model || {}).map(([m, c]) => ({ label: m, value: c, color: modelColor(m) })), num)}</div>
       <div class="card"><h2>Releases</h2>${rel.length ? `<table><tr><th>Release</th><th>Champion</th><th>Challenger</th><th>State</th></tr>${rel.map((x) => `<tr><td><a href="#/releases?r=${esc(x.name)}">${esc(x.name)}</a></td><td>v${x.champion}</td><td>${x.challenger ? "v" + x.challenger + " (" + Math.round(x.versions.find((v) => v.version === x.challenger).traffic * 100) + "%)" : "-"}</td><td>${x.last_verdict ? chip(x.last_verdict.replace(/_/g, " "), x.last_verdict === "ok" ? "good" : "warn") : ""}</td></tr>`).join("")}</table>` : `<div class="empty">No releases yet. Run the canary scenarios in the Simulator.</div>`}</div>
       <div class="card"><h2>Recent alerts</h2>${o.alerts.length ? `<table>${o.alerts.slice(0, 6).map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}</td></tr>`).join("")}</table>` : `<div class="empty">No alerts</div>`}</div>
-    </div>` : `<div class="card empty">Nothing recorded yet.</div>`);
+    </div>` : `<div class="card empty">Nothing recorded yet. Send a prompt with the Try-it panel above, <a href="#/playground">upload a file of prompts</a> in the Playground, or generate a day of traffic in the <a href="#/simulator">Simulator</a>. <a href="#/about">Read the guide</a>.</div>`);
   heroInit();
 };
 
@@ -250,6 +250,8 @@ routes.playground = async (el) => {
     catch (e) { $("#p-out").innerHTML = `<h2>Refused</h2><div class="answer">${esc(e.message)}</div><div style="margin-top:8px">${chip("HTTP " + e.status, "bad")}${chip(e.data?.error?.code || "", "bad")}${(e.data?.error?.findings || []).map((f) => chip(f, "warn")).join("")}</div>`; }
   });
   $("#p-send").onclick = send(false); $("#p-dry").onclick = send(true);
+  [["#p-system", 50], ["#p-prompt", 200], ["#p-context", 200]].forEach(([id, kb]) => attachFile($(id), { exts: ["txt", "md", "json"], maxBytes: kb * 1024 }));
+  el.insertAdjacentHTML("beforeend", batchCardHtml()); bindBatch();
 };
 function renderResult(r, dry) {
   const rt = r.route, pts = Object.entries(rt.signals.points);
@@ -266,7 +268,7 @@ function renderResult(r, dry) {
 // ---------- routing
 routes.routing = async (el) => {
   const d = await api("/api/routing?hours=24"), r = d.report, f = d.frontier;
-  el.innerHTML = header("Router", "Each request goes to the cheapest model that is enough for its difficulty", simBanner()) + (!r.calls ? `<div class="card empty">No routed traffic yet.</div>` : `
+  el.innerHTML = header("Router", "Each request goes to the cheapest model that is enough for its difficulty", simBanner()) + (!r.calls ? `<div class="card empty">No routed traffic yet. <a href="#/playground">Run a file of prompts</a> (drop a .jsonl or .csv, or paste) or fill this page from the <a href="#/simulator">Simulator</a>.</div>` : `
   ${tiles([{ k: "Spend", v: usd(r.usd, 3) }, { k: `Same traffic on ${esc(d.baseline_model)}`, v: usd(r.baseline_usd, 3) }, { k: "Saved", v: usd(r.saved_usd, 3), d: r.saved_pct.toFixed(1) + "%" },
     { k: "Difficulty estimate vs label", v: r.confusion.accuracy == null ? "-" : pct(r.confusion.accuracy), d: `${num(r.confusion.labelled)} labelled calls` }, { k: "Pinned by caller", v: num(r.pinned) }])}
   <div class="grid g2">
@@ -312,7 +314,7 @@ routes.observability = async (el) => {
       <div class="row"><div><label>Model</label><select id="fi-m">${S.meta.models.filter((m) => m.mock).map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>Error rate</label><input id="fi-e" type="number" min="0" max="1" step="0.1" value="0.5" style="width:80px"></div><div><label>Latency x</label><input id="fi-l" type="number" min="0.1" step="0.5" value="1" style="width:80px"></div><button id="fi-set">Inject</button><button id="fi-clear">Clear all</button></div>
       <div class="sub" style="margin-top:6px">Active: ${Object.keys(S.meta.faults).length ? Object.entries(S.meta.faults).map(([m, f]) => chip(`${m}: ${pct(f.error_rate, 0)} errors, x${f.latency_mult} latency`, "warn")).join("") : "none"}</div></div>
   </div>
-  <div class="card" style="margin-top:14px"><h2>Recent calls (no prompt text)</h2><div class="scroll"><table><tr><th>Time</th><th>Tenant</th><th>Feature</th><th>Model</th><th>Route</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">Latency</th><th>Flags</th></tr>${calls.map((c) => `<tr><td>${hhmm(c.at)}</td><td>${esc(c.tenant)}</td><td>${esc(c.feature)}</td><td>${esc(c.model || "-")}</td><td>${esc(["easy", "medium", "hard"][c.diff_est])}</td><td class="n">${c.prompt_tokens + c.completion_tokens}</td><td class="n">${usd(c.usd, 6)}</td><td class="n">${ms(c.latency_ms)}</td><td>${c.cached ? chip("cache", "good") : ""}${c.fallback_used ? chip("fallback", "warn") : ""}${c.redactions.length ? chip("redacted", "info") : ""}${c.error ? chip(c.error_kind || "error", "bad") : ""}${c.release ? chip(c.release + " v" + c.version) : ""}</td></tr>`).join("")}</table></div></div>` : `<div class="card empty">No calls in this window.</div>`}`;
+  <div class="card" style="margin-top:14px"><h2>Recent calls (no prompt text)</h2><div class="scroll"><table><tr><th>Time</th><th>Tenant</th><th>Feature</th><th>Model</th><th>Route</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">Latency</th><th>Flags</th></tr>${calls.map((c) => `<tr><td>${hhmm(c.at)}</td><td>${esc(c.tenant)}</td><td>${esc(c.feature)}</td><td>${esc(c.model || "-")}</td><td>${esc(["easy", "medium", "hard"][c.diff_est])}</td><td class="n">${c.prompt_tokens + c.completion_tokens}</td><td class="n">${usd(c.usd, 6)}</td><td class="n">${ms(c.latency_ms)}</td><td>${c.cached ? chip("cache", "good") : ""}${c.fallback_used ? chip("fallback", "warn") : ""}${c.redactions.length ? chip("redacted", "info") : ""}${c.error ? chip(c.error_kind || "error", "bad") : ""}${c.release ? chip(c.release + " v" + c.version) : ""}</td></tr>`).join("")}</table></div></div>` : `<div class="card empty">No calls in this window. <a href="#/playground">Run a file of prompts</a> in the Playground, start the <a href="#/simulator">Simulator</a>, or widen the window above.</div>`}`;
   $("#f-go").onclick = () => { location.hash = `#/observability?hours=${$("#f-h").value}&tenant=${$("#f-t").value}&feature=${$("#f-f").value}`; };
   $("#f-csv").onclick = guard(async () => {
     const r = await fetch(`/api/export/calls.csv?hours=${hours}&tenant=${encodeURIComponent(tenant)}&include_simulated=true`, { headers: { "X-Admin-Token": S.token } });
@@ -342,7 +344,7 @@ routes.releases = async (el) => {
     <div><label>New release</label><input id="nr-name" placeholder="name" size="12"></div><div><label>Model</label><select id="nr-model"><option>auto</option>${S.meta.models.map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>System prompt</label><input id="nr-sys" placeholder="optional" size="26"></div><button id="nr-go">Create</button></div>
     <div class="sub" style="margin-top:6px">Call a release like a model: <code>"model": "${esc(sel || "support-bot")}"</code>. Assignment is a hash of the session key, so the same user stays on the same arm.</div></div><div id="rel"></div>`;
   $("#nr-go").onclick = guard(async () => { await api("/api/releases", "POST", { name: $("#nr-name").value.trim(), model: $("#nr-model").value, system_prompt: $("#nr-sys").value }); location.hash = "#/releases?r=" + $("#nr-name").value.trim(); route(); });
-  if (!sel) { $("#rel").innerHTML = `<div class="card empty">No releases. Create one above, or run canary-good, canary-bad or ab-test in the Simulator.</div>`; return; }
+  if (!sel) { $("#rel").innerHTML = `<div class="card empty">No releases. Create one above (you can load its system prompt from a .txt file under "New version" once it exists), or run canary-good, canary-bad or ab-test in the <a href="#/simulator">Simulator</a>.</div>`; return; }
   const draw = async () => {
     const r = await api("/api/releases/" + encodeURIComponent(sel)); if (!$("#rel")) return;
     const ck = r.check, an = r.analysis, slo = r.slo;
@@ -374,7 +376,8 @@ routes.releases = async (el) => {
     })));
     const tr = $("#tr"); if (tr) { tr.oninput = () => ($("#tr-v").textContent = tr.value + "%"); $("#tr-go").onclick = guard(async () => { await api(base + "/traffic", "POST", { traffic: tr.value / 100 }); draw(); }); }
     $("#s-go").onclick = guard(async () => { await api(base + "/slo", "PUT", { slo: { max_p95_ms: +$("#s-p95").value, max_error_rate: +$("#s-err").value, min_quality_rate: +$("#s-q").value, max_quality_drop: +$("#s-d").value, min_samples: +$("#s-n").value }, auto_rollback: $("#s-ar").value === "1" }); toast("SLO saved"); draw(); });
-    $("#nv-go").onclick = guard(async () => { await api(base + "/versions", "POST", { model: $("#nv-model").value, note: $("#nv-note").value, system_prompt: $("#nv-sys").value }); draw(); });
+    attachFile($("#nv-sys"), { exts: ["txt", "md"], maxBytes: 20 * 1024, note: "stored with the version" });
+  $("#nv-go").onclick = guard(async () => { await api(base + "/versions", "POST", { model: $("#nv-model").value, note: $("#nv-note").value, system_prompt: $("#nv-sys").value }); draw(); });
     $("#rel-del").onclick = guard(async () => { if (confirm("Delete this release?")) { await api(base, "DELETE"); location.hash = "#/releases"; route(); } });
   };
   await draw();
@@ -393,9 +396,10 @@ routes.agents = async (el) => {
     <div><label>Approval needed above</label><select id="a-ceil"><option value="read">read-only tools</option><option value="write" selected>writes</option><option value="external">external actions</option></select></div></div>
     <h3>Hard limits</h3><div class="row">${[["max_steps", "Steps", 12], ["max_tool_calls", "Tool calls", 20], ["max_usd", "Cost $", 0.25], ["max_seconds", "Seconds", 30], ["max_repeats", "Repeat limit", 3]].map(([k, l, d]) => `<div><label>${l}</label><input data-l="${k}" type="number" step="any" style="width:84px"></div>`).join("")}</div>
     <div style="margin-top:10px"><button class="primary" id="a-go">Run agent</button></div></div>
-  <div class="card"><h2>Run log <span id="r-status"></span></h2><div id="r-pending"></div><div class="log" id="r-log"><div class="sub">Start a run to watch it live.</div></div><div id="r-result"></div></div>
+  <div class="card"><h2>Run log <span id="r-status"></span></h2><div id="r-pending"></div><div class="log" id="r-log"><div class="sub">Start a run to watch it live. Pick a scenario, edit the goal (type, paste or load a .txt file) and press Run agent.</div></div><div id="r-result"></div></div>
   <div class="card" style="grid-column:1/-1"><h2>Recent runs</h2><div id="r-list"></div></div></div>`;
   const fill = () => { const s = scen.find((x) => x.id === agentSel); $("#a-goal").value = s.goal; $$("[data-l]").forEach((i) => (i.value = s.limits[i.dataset.l] ?? {max_steps: 12, max_tool_calls: 20, max_usd: 0.25, max_seconds: 30, max_repeats: 3}[i.dataset.l])); $$(".scen").forEach((x) => x.classList.toggle("sel", x.dataset.s === agentSel)); };
+  attachFile($("#a-goal"), { exts: ["txt", "md"], maxBytes: 20 * 1024, note: "the goal is stored with secrets removed" });
   $$(".scen").forEach((x) => (x.onclick = () => { agentSel = x.dataset.s; fill(); })); fill();
   $("#a-go").onclick = guard(async () => {
     const limits = {}; $$("[data-l]").forEach((i) => (limits[i.dataset.l] = +i.value));
@@ -445,6 +449,7 @@ print(open(__file__).read()[:40])</textarea>
   <div class="card"><h2>Attack suite</h2><div class="sub">Twelve real attack programs per profile. The harness plants a secret, listens on a loopback port and watches the disk, so "got through" is evidence it saw itself.</div>
   <div style="margin:8px 0"><button class="primary" id="pb-go">Run the attack suite</button> <span class="sub" id="pb-wait"></span></div><div id="pb-out"></div></div></div>
   ${profs.some((p) => !p.available) ? `<div class="banner" style="margin-top:14px">${profs.filter((p) => !p.available).map((p) => esc(p.name) + ": " + esc(p.reason)).join("; ")}. The restricted profile is an audit hook inside Python, a speed bump rather than a security boundary; use Docker for untrusted code.</div>` : ""}`;
+  attachFile($("#sb-code"), { exts: ["py", "txt"], maxBytes: 200 * 1024, note: "Python source" });
   const desc = () => ($("#sb-desc").textContent = profs.find((p) => p.name === $("#sb-prof").value).description); desc(); $("#sb-prof").onchange = desc;
   $("#sb-go").onclick = guard(async () => { $("#sb-out").innerHTML = `<div class="sub">Running...</div>`; const r = await api("/api/sandbox/run", "POST", { code: $("#sb-code").value, profile: $("#sb-prof").value, wall_seconds: +$("#sb-t").value, allow_unsafe: $("#sb-prof").value === "subprocess" && confirm(UNSAFE) });
     $("#sb-out").innerHTML = `<div style="margin-top:8px">${chip("exit " + r.exit_code, r.exit_code === 0 ? "good" : "bad")}${r.timed_out ? chip("timed out, killed", "warn") : ""}${r.output_truncated ? chip("output capped, killed", "warn") : ""}${chip(r.elapsed_s + " s")}</div>${r.stdout ? `<h3>stdout</h3><pre>${esc(r.stdout)}</pre>` : ""}${r.stderr ? `<h3>stderr</h3><pre>${esc(r.stderr)}</pre>` : ""}`; });
@@ -456,7 +461,7 @@ print(open(__file__).read()[:40])</textarea>
 // ---------- tenants
 routes.tenants = async (el) => {
   const ts = await api("/api/tenants");
-  el.innerHTML = header("Tenants and keys", "Per-tenant API keys, budgets, rate limits, model access, redaction and fallback chains") + `<div class="grid g2">${ts.map((t) => `<div class="card"><h2>${esc(t.name)}</h2>
+  el.innerHTML = header("Tenants and keys", "Per-tenant API keys, budgets, rate limits, model access, redaction and fallback chains") + `<div class="grid g2">${tenantImportHtml()}${ts.map((t) => `<div class="card"><h2>${esc(t.name)}</h2>
     ${bars([{ label: "budget", value: t.spent_usd, sub: `of ${usd(t.budget_usd, 2)}`, color: t.spent_usd > t.budget_usd * 0.9 ? "var(--bad)" : "var(--c2)" }], (v) => usd(v, 4))}
     <div class="sub">${num(t.calls_in_window)} calls in the ${t.budget_window_s / 3600} h window. Budget and rate limits are checked before the call.</div>
     <div class="row"><div><label>Budget $</label><input data-f="budget_usd" type="number" step="any" value="${t.budget_usd}" style="width:90px"></div><div><label>Requests/min</label><input data-f="rpm" type="number" value="${t.rpm}" style="width:80px"></div><div><label>Min quality (router)</label><input data-f="min_quality" type="number" step="0.05" min="0" max="1" value="${t.min_quality}" style="width:80px"></div></div>
@@ -464,10 +469,12 @@ routes.tenants = async (el) => {
     <div class="row"><div><label>Block these terms</label><input data-f="deny_terms" placeholder="comma separated" value="${esc((t.deny_terms || []).join(", "))}" size="22"></div><div><label>Redact these terms</label><input data-f="redact_terms" placeholder="comma separated" value="${esc((t.redact_terms || []).join(", "))}" size="22"></div></div>
     <div class="row"><label style="display:inline"><input type="checkbox" data-f="redact_pii" ${t.redact_pii ? "checked" : ""}> redact PII (emails, cards, CNIC, phone)</label><label style="display:inline"><input type="checkbox" data-f="cache_enabled" ${t.cache_enabled ? "checked" : ""}> response cache</label></div>
     <div class="sub">Secrets (cloud keys, tokens) are always redacted; prompt injection is always blocked.</div>
+    ${termsImportHtml(t.name)}
     <div style="margin-top:8px"><button class="primary" data-save="${esc(t.name)}">Save policy</button> <button class="danger" data-del="${esc(t.name)}">Delete tenant</button></div>
     <h3>API keys</h3>${t.keys.map((k) => `<div class="row" style="align-items:center"><span class="mono">${esc(k.prefix)}...</span><span class="sub">${esc(k.label)}</span>${k.revoked ? chip("revoked", "bad") : `<button class="sm danger" data-rev="${k.id}">Revoke</button>`}${S.meta.demo_keys[t.name] && !k.revoked && k.label === "demo key" ? `<span class="chip">demo key: <span class="mono">${esc(S.meta.demo_keys[t.name])}</span></span>` : ""}</div>`).join("") || `<span class="sub">no keys</span>`}
     <div style="margin-top:6px"><button class="sm" data-newkey="${esc(t.name)}">New key</button></div></div>`).join("")}
     <div class="card"><h2>New tenant</h2><div class="row"><div><label>Name</label><input id="nt-name" placeholder="lowercase-name"></div><button class="primary" id="nt-go">Create with first key</button></div><div id="nt-out"></div></div></div>`;
+  bindTenantImport(); $$("details.imp").forEach(bindTermsImport);
   const list = (v) => v.split(",").map((x) => x.trim()).filter(Boolean);
   $$("[data-save]").forEach((b) => (b.onclick = guard(async () => { const card = b.closest(".card"), body = {};
     $$("[data-f]", card).forEach((i) => { const f = i.dataset.f; body[f] = i.type === "checkbox" ? i.checked : ["allowed_models", "fallbacks", "deny_terms", "redact_terms"].includes(f) ? list(i.value) : +i.value; });
@@ -503,4 +510,4 @@ routes.simulator = async (el) => {
 
 const savedTheme = localStorage.getItem("lcr-theme"); if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 window.addEventListener("hashchange", route);
-route();
+document.addEventListener("DOMContentLoaded", route); // after inputs.js has added its pages

@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import obs, sandbox
+from . import inputs, obs, sandbox
 from .core import DEMO_TENANTS, Core, demo_key
 from .gateway import MAX_CHARS, GatewayError, GatewayRequest
 from .providers import ProviderSet
@@ -26,11 +26,12 @@ from .releases import ReleaseError
 from .simulator import SCENARIOS as SIM_SCENARIOS
 from .simulator import Simulator
 from .store import Store
-from .tenants import TenantError
+from .tenants import NAME_RE, TenantError
 
 STATIC = Path(__file__).parent / "static"
 VERSION = "0.2.0"
 MAX_BODY = 1_000_000  # bytes accepted on any request
+BATCH_CHUNK = 25  # prompts per /api/playground/batch request
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
@@ -486,6 +487,140 @@ def create_app(
             dry_run=bool(b.get("dry_run")),
         )
         return await run_in_threadpool(core.gateway.handle, req)
+
+    # ================================================================== uploads and pasted content
+
+    def parsed(kind: str, b: dict) -> dict:
+        fn = {
+            "prompts": inputs.parse_prompts,
+            "tenants": inputs.parse_tenants,
+            "terms": inputs.parse_terms,
+        }.get(kind)
+        if fn is None:
+            raise ValueError("kind must be prompts, tenants or terms")
+        try:
+            return fn(b.get("content", ""), str(b.get("filename") or ""))
+        except inputs.InputError as e:
+            raise ValueError(str(e)) from e
+
+    @app.post("/api/inputs/parse", dependencies=[Depends(admin)])
+    async def parse_input(request: Request):
+        """Understand an uploaded or pasted file without acting on it (the UI's preview)."""
+        b = await jbody(request)
+        return parsed(str(b.get("kind", "")), b)
+
+    @app.post("/api/playground/batch", dependencies=[Depends(admin)])
+    async def playground_batch(request: Request):
+        """Run up to 25 prompts through the gateway as one tenant; a refusal is a row, not an error."""
+        b = await jbody(request)
+        items = b.get("prompts")
+        if not isinstance(items, list) or not 1 <= len(items) <= BATCH_CHUNK:
+            raise ValueError(f"prompts must be a list of 1 to {BATCH_CHUNK} items")
+
+        def one(it) -> dict:
+            if not isinstance(it, dict) or not isinstance(it.get("prompt"), str):
+                return {"status": "invalid", "message": "item has no prompt text"}
+            msgs = ([{"role": "system", "content": it["system"]}] if it.get("system") else []) + [
+                {"role": "user", "content": it["prompt"]}
+            ]
+            req = GatewayRequest(
+                tenant=str(b.get("tenant") or "acme"),
+                messages=msgs,
+                model=str(b.get("model") or "auto"),
+                max_tokens=int(b.get("max_tokens") or 256),
+                feature=str(b.get("feature") or "batch"),
+                context=str(it.get("context") or "")[:MAX_CHARS],
+                use_cache=bool(b.get("use_cache", True)),
+                source="playground",
+                dry_run=bool(b.get("dry_run")),
+            )
+            try:
+                r = core.gateway.handle(req)
+            except GatewayError as e:
+                return {
+                    "status": "blocked" if e.code in ("blocked", "injection") else "refused",
+                    "code": e.code,
+                    "message": e.message,
+                    "findings": e.extra.get("findings", []),
+                }
+            return {
+                "status": "routed" if req.dry_run else "served",
+                "model": r["route"]["primary"] if req.dry_run else r["model"],
+                "difficulty": r["route"]["difficulty"],
+                "usd": None if req.dry_run else r["usage"]["usd"],
+                "cached": bool(r.get("cached")),
+                "latency_ms": r.get("latency_ms"),
+                "redactions": r.get("redactions", []),
+                "answer": r.get("text", ""),
+            }
+
+        rows = await run_in_threadpool(lambda: [one(it) for it in items])
+        return {"rows": rows}
+
+    @app.post("/api/tenants/import", dependencies=[Depends(admin)])
+    async def import_tenants(request: Request):
+        """Create tenants from a file; ``update_existing`` changes the policy of ones that exist.
+        ``dry_run`` reports what would happen. New tenants get a first key, shown once."""
+        b = await jbody(request)
+        res = parsed("tenants", b)
+        update, dry = bool(b.get("update_existing")), bool(b.get("dry_run"))
+        out = []
+        for t in res["tenants"]:
+            name, policy = t["name"], t["policy"]
+            try:
+                exists = core.tenants.get(name) is not None
+                if exists and not update:
+                    out.append({"name": name, "status": "skipped", "note": "already exists"})
+                elif dry:
+                    if not exists:
+                        if not NAME_RE.match(name):
+                            raise TenantError("name must be lowercase letters, digits, - or _")
+                        core.tenants.check_policy(policy)
+                    else:
+                        core.tenants.check_policy(policy)
+                    out.append({"name": name, "status": "would update" if exists else "would create"})
+                elif exists:
+                    core.tenants.update(name, **policy)
+                    out.append({"name": name, "status": "updated"})
+                else:
+                    core.tenants.create(name, **policy)
+                    key = core.tenants.add_key(name, "imported")
+                    out.append({"name": name, "status": "created", "key": key["key"]})
+            except (TenantError, ValueError, TypeError) as e:
+                out.append({"name": name or "?", "status": "error", "note": str(e)})
+        return {
+            "format": res["format"],
+            "results": out,
+            "errors": res["errors"],
+            "error_count": res["error_count"],
+        }
+
+    @app.post("/api/tenants/{name}/terms", dependencies=[Depends(admin)])
+    async def import_terms(name: str, request: Request):
+        """Load a block or redact term list from a file: merge into the current list or replace it."""
+        b = await jbody(request)
+        kind = {"deny": "deny_terms", "redact": "redact_terms"}.get(str(b.get("kind")))
+        if kind is None:
+            raise ValueError("kind must be deny or redact")
+        t = core.tenants.get(name)
+        if t is None:
+            raise TenantError(f"no tenant {name!r}")
+        res = parsed("terms", b)
+        before = list(t[kind])
+        if b.get("mode") == "replace":
+            merged = res["terms"]
+        else:
+            have = {x.lower() for x in before}
+            merged = before + [x for x in res["terms"] if x.lower() not in have]
+        core.tenants.update(name, **{kind: merged})
+        return {
+            "kind": kind,
+            "before": len(before),
+            "found": len(res["terms"]),
+            "total": len(merged),
+            "terms": merged,
+            "errors": res["errors"],
+        }
 
     @app.get("/api/routing", dependencies=[Depends(admin)])
     def routing(hours: float = 24.0):

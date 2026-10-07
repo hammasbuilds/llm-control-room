@@ -85,6 +85,27 @@ Motion tokens and research notes are in [docs/MOTION.md](docs/MOTION.md). Button
 ![Blocked](docs/interaction/02-blocked-injection.png)
 ![Phone](docs/interaction/03-phone.png)
 
+## Inputs
+
+Every place that takes content accepts a file (file picker or drag-and-drop onto the box) **and** pasted text, shows what the input looks like, and has a "load example" button. Files are read in the browser as UTF-8 text (wrong type, binary or oversize files get a plain error) and sent to the local server as JSON; nothing uploaded is stored except what you ask to save.
+
+| Feature | Before | After |
+|---|---|---|
+| Playground, one prompt | type or paste | type or paste, plus load prompt, system prompt and context from `.txt` `.md` `.json` (up to 200 KB) |
+| Playground, **batch** (new) | none | `.jsonl` `.csv` `.json` `.txt` or pasted, up to 500 prompts and 500 KB, run as a chosen tenant (or route only), progress bar, results table, CSV download |
+| Tenants, **import** (new) | one at a time in a form | `.json` or `.csv` (up to 50 tenants, 500 KB) or pasted, preview then import, first key shown once; current config downloads as JSON or CSV |
+| Tenants, block / redact terms | comma-separated field | plus load a term list (`.txt` `.csv` `.json`, up to 100 KB), add to or replace the list |
+| Sandbox | type or paste | plus load or drop a `.py` / `.txt` file (up to 200 KB) |
+| Agent goal, release version prompt | type or paste | plus load a `.txt` / `.md` file (up to 20 KB) |
+| Admin token | `#token=` link or prompt | unchanged |
+
+Endpoints behind it: `POST /api/inputs/parse` (preview), `/api/playground/batch` (25 prompts per request, refusals come back as rows), `/api/tenants/import`, `/api/tenants/{name}/terms`. `scripts/ui_inputs.py` drives all of it in a headless browser (picker, drag-and-drop, paste, errors, 390 px, dark).
+
+The **About and guide** page (nav entry, and the "?" by the logo) covers what it is, what it does, step-by-step use with the expected input and output of each feature, limits, privacy, the roadmap and the maker.
+
+![About and guide](docs/screenshots/15-about.png)
+![Batch from a file](docs/screenshots/16-playground-batch.png)
+
 ## Input / Output
 
 `demo.py` drives every feature through the real HTTP app; the full transcript is [docs/demo-output.txt](docs/demo-output.txt). Every figure below is copied from it.
@@ -162,7 +183,7 @@ The full list, with severity and a regression test for each, is [docs/REVIEW.md]
 ## Tests
 
 ```
-uv run pytest -q          # 207 tests: providers (incl. stub OpenAI/Ollama/Anthropic servers), router, gateway,
+uv run pytest -q          # 226 tests: providers (incl. stub OpenAI/Ollama/Anthropic servers), router, gateway,
                           # releases, observability, simulator, sandbox (incl. Docker), agents, every endpoint,
                           # and tests/test_security.py (admin surface, isolation, races, redaction, injection, sandbox escapes)
 uv run ruff check .
