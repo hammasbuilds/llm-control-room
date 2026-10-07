@@ -77,6 +77,14 @@ A model spec is `id[:usd_in_per_1M[:usd_out_per_1M[:q_easy:q_medium:q_hard]]]`. 
 
 Also: [A/B](docs/screenshots/08-releases-ab.png), [tenants](docs/screenshots/12-tenants.png), [simulator](docs/screenshots/04-simulator.png), [dark mode](docs/screenshots/13-overview-dark.png), [phone](docs/screenshots/14-overview-phone.png).
 
+## Interaction
+
+Motion tokens and research notes are in [docs/MOTION.md](docs/MOTION.md). Buttons lift on hover, scale to .97 on press with a pointer-origin ripple, show a spinner while busy and ring-flash green or magenta on success or error. Cards lift and carry a pointer-following cyan spotlight, KPI numbers count up, bars grow in, toasts slide in and stack, inputs get an animated focus ring and shake when invalid. The Try-it panel scans while a request runs and types the answer in. Everything is off under `prefers-reduced-motion`.
+
+![Run result](docs/interaction/01-press-glow-and-result.png)
+![Blocked](docs/interaction/02-blocked-injection.png)
+![Phone](docs/interaction/03-phone.png)
+
 ## Input / Output
 
 `demo.py` drives every feature through the real HTTP app; the full transcript is [docs/demo-output.txt](docs/demo-output.txt). Every figure below is copied from it.

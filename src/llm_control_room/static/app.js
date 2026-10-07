@@ -36,8 +36,12 @@ async function api(path, method = "GET", body) {
   return data;
 }
 function toast(msg, err = false) {
+  let box = $("#toasts");
+  if (!box) { box = document.createElement("div"); box.id = "toasts"; box.setAttribute("role", "status"); box.setAttribute("aria-live", "polite"); document.body.appendChild(box); }
   const t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.textContent = msg;
-  document.body.appendChild(t); setTimeout(() => t.remove(), err ? 6000 : 3000);
+  box.appendChild(t);
+  if (window.lcrFlash) window.lcrFlash(err ? "err" : "ok");
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 220); }, err ? 6000 : 3000);
 }
 const guard = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { toast(e.message, true); } };
 
