@@ -1,4 +1,4 @@
-"""Draw the LLM Control Room icon (a pulse line on a blue tile) into assets/llm-control-room.ico.
+"""Draw the LLM Control Room icon (a gradient pulse line in a dark console tile) into assets/llm-control-room.ico.
 
 Standard library only: pixels are computed here and stored as PNG entries inside the .ico.
 """
@@ -21,17 +21,30 @@ def seg_dist(px, py, a, b):
     return math.hypot(px - ax - t * dx, py - ay - t * dy)
 
 
+def grad(x, y, s):
+    """Cyan (top left) to magenta (bottom right), the wordmark gradient."""
+    t = max(0.0, min(1.0, (x + y) / (2 * s)))
+    return (int(34 + (224 - 34) * t), int(211 + (64 - 211) * t), int(238 + (251 - 238) * t))
+
+
 def pixel(x, y, s):
-    r = s * 0.22
+    r = s * 0.19
     cx, cy = min(max(x, r), s - r), min(max(y, r), s - r)
     if (x - cx) ** 2 + (y - cy) ** 2 > r * r:
         return None
+    # gradient frame, like a console bezel
+    edge = min(x, y, s - x, s - y)
+    if edge <= s * 0.04 and (x - cx) ** 2 + (y - cy) ** 2 >= 0 and edge < s * 0.04:
+        return grad(x, y, s)
     pts = [(a * s, b * s) for a, b in PTS]
     if min(seg_dist(x, y, pts[i], pts[i + 1]) for i in range(len(pts) - 1)) <= s * 0.045:
-        return (255, 255, 255)
+        return grad(x, y, s)
     if math.hypot(x - s * 0.5, y - s * 0.2) <= s * 0.05:
-        return (255, 255, 255)
-    return (47, 93, 216)
+        return (184, 255, 61)  # the neon-lime "healthy" light
+    d = math.hypot(x - s * 0.5, y - s * 0.53)
+    if abs(d - s * 0.27) <= s * 0.025:
+        return (29, 42, 82)
+    return (5, 9, 20)
 
 
 def render(size):

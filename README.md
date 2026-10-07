@@ -4,7 +4,18 @@ A self-hosted control plane for LLM apps, on your own computer, with no GPU, no 
 
 Apps call one OpenAI-compatible endpoint. The control room authenticates the tenant, redacts secrets and PII, routes each request to the cheapest model that is enough, caches, falls back when a provider fails, records cost and latency without storing a single prompt, runs prompt/model releases as canaries with an auto-rollback that can tell a bad canary from a provider outage, runs agents under hard limits, and runs generated code under named hardening profiles. A built-in deterministic mock provider (four fake models with different price, latency and quality) and a traffic simulator make every chart and feature work offline. Real providers are optional.
 
-![Overview](docs/screenshots/01-overview.png)
+The home page is a mission-control console (dark navy by default, light mode with cool greys). Its "Try it" panel sends a real prompt through the gateway as a chosen tenant and shows the route, cost, latency, cache hit and the redactions or block reason. Four one-click examples:
+
+| Example | Output (acme tenant, mock provider) |
+|---|---|
+| Greeting | served by `nano-mock`, easy, about $0.000000 (cache hit on repeat) |
+| Hard reasoning | served by `sage-mock`, hard, $0.000726 |
+| Key + email | served by `nano-mock`, redacted `openai_key` and `email` before the call left |
+| Injection | blocked, HTTP 400: `injection:instruction_override`, `injection:system_prompt_exfil` |
+
+![Overview, light](docs/screenshots/01-overview.png)
+
+![Overview, dark](docs/screenshots/13-overview-dark.png)
 
 | | |
 |---|---|

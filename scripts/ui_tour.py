@@ -64,6 +64,17 @@ def main() -> None:
         # --- overview (seeded first-run traffic)
         go("overview")
         assert page.locator(".tile").count() >= 6, "overview tiles missing"
+        # the "try it" hero: real gateway output for each example chip
+        page.wait_for_selector("#h-out .verdict", timeout=10000)
+        for i, want in enumerate(("served", "served", "redact", "blocked")):
+            page.click(f"[data-t='{i}']")
+            page.wait_for_selector("#h-out .kv", timeout=10000)
+            txt = page.inner_text("#h-out").lower()
+            assert want in txt, f"hero example {i}: expected {want!r} in {txt[:200]!r}"
+            print("hero", i, "->", " | ".join(txt.splitlines()[:14]))
+        page.click("[data-t='2']")
+        page.wait_for_selector("#h-out .kv", timeout=10000)
+        page.wait_for_timeout(300)
         shot("01-overview")
 
         # --- playground: PII + routing explanation, then an injection refusal
