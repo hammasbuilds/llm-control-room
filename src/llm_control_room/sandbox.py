@@ -102,33 +102,115 @@ def profile_list() -> list[dict]:
 
 
 BOOT = r"""
-import os, runpy, sys
-_W = os.path.realpath(os.getcwd())
-_READ = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix,
-                                       sys.base_exec_prefix)} | {_W}
-_DENY = {"socket.connect", "socket.bind", "socket.getaddrinfo", "socket.gethostbyname",
-         "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
-         "os.forkpty", "ctypes.dlopen", "ctypes.cdll", "winreg.OpenKey", "shutil.rmtree"}
-_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-def _inside(p, roots):
-    return any(p == r or p.startswith(r + os.sep) for r in roots)
-def _hook(event, args):
-    if event in _DENY:
-        raise PermissionError("sandbox: " + event + " is blocked")
-    if event == "open":
-        path, mode, flags = args
-        if isinstance(path, int):
-            return
-        p = os.path.realpath(os.fsdecode(path))
-        write = (isinstance(mode, str) and any(c in mode for c in "wax+")) or \
-                (isinstance(flags, int) and bool(flags & _WRITE_FLAGS))
-        if not _inside(p, {_W} if write else _READ):
-            raise PermissionError("sandbox: " + ("write" if write else "read") + " outside the workdir is blocked")
-    if event == "import" and args[0] in ("ctypes", "_ctypes"):
-        raise ImportError("sandbox: ctypes is blocked")
-sys.addaudithook(_hook)
+import os, sys, threading
+
+def _install():
+    # Everything the hook needs is captured here, in a closure. Nothing in this module's globals
+    # leads to the hook, so user code cannot reach it by walking frames (f_back, tracebacks) or
+    # by editing a module-level set. gc.get_objects/get_referrers are refused by the hook itself.
+    case = os.path.normcase
+    sep = os.sep
+    work = os.path.realpath(os.getcwd())
+    read_roots = tuple({os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix,
+                                                       sys.base_exec_prefix)}) + (work,)
+    deny = frozenset({
+        "socket.connect", "socket.bind", "socket.getaddrinfo", "socket.gethostbyname",
+        "socket.gethostbyname_ex", "socket.gethostbyaddr", "socket.getnameinfo",
+        "socket.getservbyname", "socket.getservbyport", "socket.sendto", "socket.sendmsg",
+        "socket.sethostname",
+        "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
+        "os.forkpty", "os.startfile", "os.kill", "os.killpg", "os.chroot", "os.setuid", "os.setgid",
+        "_posixsubprocess.fork_exec", "_winapi.CreateProcess", "signal.pthread_kill",
+        "webbrowser.open", "pty.spawn", "shutil.make_archive", "sys._current_frames",
+        "sys._current_exceptions", "gc.get_objects", "gc.get_referrers", "gc.get_referents",
+        "sys.addaudithook", "winreg.OpenKey", "winreg.CreateKey", "winreg.SetValue",
+    })
+    deny_prefix = ("ctypes.", "winreg.", "msvcrt.")
+    writes = frozenset({
+        "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod", "os.chown", "os.truncate",
+        "os.utime", "os.symlink", "os.link", "os.mkfifo", "os.mknod", "os.chflags", "os.lchmod",
+        "os.lchown", "os.setxattr", "os.removexattr", "os.chdir", "shutil.copyfile",
+        "shutil.copymode", "shutil.copystat", "shutil.copytree", "shutil.move", "shutil.rmtree",
+        "shutil.unpack_archive", "tempfile.mkstemp", "tempfile.mkdtemp", "os.replace",
+    })
+    reads = frozenset({"os.listdir", "os.scandir", "os.walk", "glob.glob"})
+    flags_w = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+    bad_ext = (".pyd", ".so", ".dll", ".dylib", ".exe", ".bat", ".cmd", ".ps1", ".vbs", ".scr",
+               ".com", ".lnk", ".msi", ".sh", ".jar")
+
+    def inside(p, roots):
+        p = case(p)
+        return any(p == case(r) or p.startswith(case(r) + sep) for r in roots)
+
+    def real(path):
+        try:
+            return os.path.realpath(os.fsdecode(path))
+        except Exception:
+            return None
+
+    def native(p):
+        name = os.path.basename(p).rstrip(". ").lower()
+        return any(name.endswith(x) or (x + ".") in name for x in bad_ext)
+
+    def hook(event, args):
+        if event in deny or event.startswith(deny_prefix):
+            raise PermissionError("sandbox: " + event + " is blocked")
+        if event == "open":
+            path, mode, flags = args
+            if isinstance(path, int):
+                return
+            p = real(path)
+            write = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+                isinstance(flags, int) and bool(flags & flags_w))
+            if p is None or not inside(p, (work,) if write else read_roots):
+                raise PermissionError("sandbox: " + ("write" if write else "read")
+                                      + " outside the workdir is blocked")
+            if write and native(p):
+                raise PermissionError("sandbox: writing an executable or library file is blocked")
+        elif event in writes:
+            for a in args:
+                if isinstance(a, (str, bytes, os.PathLike)):
+                    p = real(a)
+                    if p is None or not inside(p, (work,)):
+                        raise PermissionError("sandbox: " + event + " outside the workdir is blocked")
+                    if native(p) and event != "os.remove":
+                        raise PermissionError("sandbox: creating an executable file is blocked")
+        elif event in reads:
+            a = args[0] if args else None
+            if isinstance(a, (str, bytes, os.PathLike)):
+                p = real(a)
+                if p is None or not inside(p, read_roots):
+                    raise PermissionError("sandbox: listing a directory outside the workdir is blocked")
+        elif event == "import" and args[0] in ("ctypes", "_ctypes"):
+            raise ImportError("sandbox: " + args[0] + " is blocked")
+
+    sys.addaudithook(hook)
+
+_install()
+del _install
+
+import runpy, traceback
 sys.argv = ["main.py"]
-runpy.run_path("main.py", run_name="__main__")
+_code = [1]  # a crash anywhere in this wrapper must read as failure, not success
+
+def _go():
+    try:
+        runpy.run_path("main.py", run_name="__main__")
+        _code[0] = 0
+    except SystemExit as e:
+        c = e.code
+        _code[0] = c if isinstance(c, int) else (0 if c is None else (print(c, file=sys.stderr) or 1))
+    except BaseException:
+        traceback.print_exc()
+        _code[0] = 1
+
+threading.stack_size(16 * 1024 * 1024)
+_t = threading.Thread(target=_go)
+_t.start()
+_t.join()
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(_code[0])
 """
 
 
@@ -185,6 +267,81 @@ def docker_command(
     ]
 
 
+MEMORY_LIMIT_MB = 1024  # per sandboxed process (restricted and subprocess profiles)
+DISK_LIMIT_MB = 64  # bytes the program may leave in its own workdir
+_slots = threading.BoundedSemaphore(4)  # sandboxed programs running at once, whoever asked
+
+
+def _dir_bytes(path: str) -> int:
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _memory_cap_windows(proc: subprocess.Popen, mb: int):
+    """Put the child in a job object with a per-process memory limit; closing it kills the child."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+
+    class Basic(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class Io(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in ("a", "b", "c", "d", "e", "f")]
+
+    class Ext(ctypes.Structure):
+        _fields_ = [
+            ("Basic", Basic),
+            ("Io", Io),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = Ext()
+    info.Basic.LimitFlags = 0x100 | 0x2000  # PROCESS_MEMORY | KILL_ON_JOB_CLOSE
+    info.ProcessMemoryLimit = mb * 1024 * 1024
+    ok = k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
+    if not ok or not k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle))):
+        k32.CloseHandle(job)
+        return None
+    return lambda: k32.CloseHandle(job)
+
+
+def _posix_limits() -> None:  # runs in the child between fork and exec
+    import resource
+
+    cap = MEMORY_LIMIT_MB * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (DISK_LIMIT_MB * 1024 * 1024,) * 2)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     try:
         if WIN:
@@ -211,6 +368,17 @@ def run_code(
         raise ValueError(f"unknown profile {profile!r}; known: {', '.join(PROFILES)}")
     if not 0 < wall_seconds <= 60:
         raise ValueError("wall_seconds must be in (0, 60]")
+    if len(code) > 200_000:
+        raise ValueError("code is limited to 200000 characters")
+    if not _slots.acquire(timeout=10):
+        raise ValueError("the sandbox is busy (4 programs already running); try again")
+    try:
+        return _run_code(code, profile, wall_seconds, output_bytes)
+    finally:
+        _slots.release()
+
+
+def _run_code(code: str, profile: str, wall_seconds: float, output_bytes: int) -> dict:
     kind = PROFILES[profile].kind
     if kind == "docker" and not docker_available():
         raise ValueError(f"the hardened profile is unavailable: {docker_status()[1]}")
@@ -233,6 +401,8 @@ def run_code(
             kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kw["start_new_session"] = True
+            if kind == "restricted":
+                kw["preexec_fn"] = _posix_limits
         started = time.perf_counter()
         proc = subprocess.Popen(
             cmd,
@@ -243,6 +413,12 @@ def run_code(
             stderr=subprocess.PIPE,
             **kw,
         )
+        release_job = None
+        if WIN and kind == "restricted":
+            try:
+                release_job = _memory_cap_windows(proc, MEMORY_LIMIT_MB)
+            except Exception:
+                release_job = None
         bufs = {"out": bytearray(), "err": bytearray()}
         flag = {"truncated": False}
 
@@ -264,11 +440,17 @@ def run_code(
         ]
         for t in threads:
             t.start()
-        timed_out = False
-        try:
-            proc.wait(timeout=wall_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        timed_out = disk_full = False
+        deadline = time.monotonic() + wall_seconds
+        while proc.poll() is None:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            if kind == "restricted" and _dir_bytes(work) > DISK_LIMIT_MB * 1024 * 1024:
+                disk_full = True
+                break
+            time.sleep(0.01)
+        if timed_out or disk_full:
             _kill_tree(proc)
             if kind == "docker":
                 subprocess.run(["docker", "kill", container], capture_output=True)
@@ -278,6 +460,8 @@ def run_code(
             _kill_tree(proc)
         for t in threads:
             t.join(timeout=2)
+        if release_job:
+            release_job()
         return {
             "profile": profile,
             "stdout": bytes(bufs["out"]).decode("utf-8", "replace"),
@@ -285,6 +469,7 @@ def run_code(
             "exit_code": proc.returncode,
             "timed_out": timed_out,
             "output_truncated": flag["truncated"],
+            "disk_limit_hit": disk_full,
             "elapsed_s": round(time.perf_counter() - started, 3),
         }
     finally:
@@ -292,6 +477,32 @@ def run_code(
 
 
 # --------------------------------------------------------------------------- probes
+
+
+TAMPER_CODE = r"""
+import gc, sys
+def wipe(g):
+    for v in list(g.values()):
+        if isinstance(v, set):
+            try:
+                v.clear()
+            except Exception:
+                pass
+try:
+    for o in gc.get_objects():
+        if getattr(o, '__name__', '') in ('hook', '_hook'):
+            wipe(o.__globals__)
+except Exception:
+    pass
+try:
+    1 / 0
+except Exception as e:
+    f = e.__traceback__.tb_frame
+    while f.f_back:
+        f = f.f_back
+        wipe(f.f_globals)
+print(open(r'HOSTFILE').read())
+"""
 
 
 def _attacks(ctx: dict) -> list[dict]:
@@ -326,6 +537,33 @@ def _attacks(ctx: dict) -> list[dict]:
             f"print(subprocess.run(['{py}', '-c', \"print('{ctx['token']}')\"], "
             "capture_output=True, text=True).stdout)\n",
         },
+        {
+            "id": "host_file_delete",
+            "title": "Delete a file outside the workdir",
+            "code": f"import os\nos.remove(r'{ctx['host_file']}')\nprint('deleted')\n",
+        },
+        {
+            "id": "udp_egress",
+            "title": "Send a UDP datagram to a host service",
+            "code": "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+            f"s.sendto(b'hello', ('127.0.0.1', {ctx['udp_port']}))\nprint('sent')\n",
+        },
+        {
+            "id": "hook_tamper",
+            "title": "Switch the sandbox off from inside, then read a host file",
+            "code": TAMPER_CODE.replace("HOSTFILE", ctx["host_file"]),
+        },
+        {
+            "id": "disk_fill",
+            "title": "Fill the disk",
+            "code": "f = open('big.bin', 'wb')\n"
+            "for _ in range(1000):\n    f.write(b'0' * 1048576)\nf.close()\nprint('filled')\n",
+        },
+        {
+            "id": "memory_bomb",
+            "title": "Allocate 2 GB",
+            "code": "x = bytearray(2 * 1024 ** 3)\nprint('allocated')\n",
+        },
         {"id": "runaway_loop", "title": "Spin forever", "code": "while True:\n    pass\n"},
         {
             "id": "output_flood",
@@ -344,7 +582,11 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
     usable, unusable = [], {}
     for prof in names:
         try:
-            r = run_code(f"print('{token}')", prof, wall_seconds=20)
+            r = run_code(
+                f"print('{token}')",
+                prof,
+                wall_seconds=60 if PROFILES[prof].kind == "docker" else 20,
+            )
         except (RuntimeError, ValueError) as exc:
             unusable[prof] = str(exc)
             continue
@@ -365,6 +607,19 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
     srv.listen(5)
     srv.settimeout(0.2)
     stop = threading.Event()
+    uhits: list[bytes] = []
+    usrv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    usrv.bind(("127.0.0.1", 0))
+    usrv.settimeout(0.2)
+
+    def udp_listen():
+        while not stop.is_set():
+            try:
+                uhits.append(usrv.recvfrom(64)[0])
+            except (TimeoutError, OSError):
+                continue
+
+    threading.Thread(target=udp_listen, daemon=True).start()
 
     def accept():
         while not stop.is_set():
@@ -384,6 +639,7 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
         "host_file": str(host_file),
         "out_file": str(out_file),
         "port": srv.getsockname()[1],
+        "udp_port": usrv.getsockname()[1],
         "token": token,
     }
     old = os.environ.get("LCR_PROBE_SECRET")
@@ -394,12 +650,29 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
             cells = {}
             for prof in names:
                 hits.clear()
+                uhits.clear()
                 out_file.unlink(missing_ok=True)
+                host_file.write_text(token, encoding="utf-8")
                 r = run_code(atk["code"], prof, wall_seconds=wall_seconds, output_bytes=200_000)
                 time.sleep(0.05)
                 if atk["id"] in ("env_secret", "host_file_read", "spawn_process"):
                     got = token in r["stdout"]
                     ev = "secret appeared in output" if got else "no secret in output"
+                elif atk["id"] == "udp_egress":
+                    got = bool(uhits)
+                    ev = "host listener received a datagram" if got else "listener saw nothing"
+                elif atk["id"] == "host_file_delete":
+                    got = not host_file.exists()
+                    ev = "file is gone from the host" if got else "file still on the host"
+                elif atk["id"] == "hook_tamper":
+                    got = token in r["stdout"]
+                    ev = "secret appeared in output" if got else "no secret in output"
+                elif atk["id"] in ("disk_fill", "memory_bomb"):
+                    word = "filled" if atk["id"] == "disk_fill" else "allocated"
+                    got = word in r["stdout"] or (
+                        atk["id"] == "disk_fill" and r["timed_out"] and not r["disk_limit_hit"]
+                    )
+                    ev = "program finished the allocation" if got else "program was stopped first"
                 elif atk["id"] == "network_egress":
                     got = bool(hits)
                     ev = "host listener accepted a connection" if got else "listener saw nothing"
@@ -418,7 +691,7 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
                         if r["timed_out"]
                         else "output uncapped"
                     )
-                if atk["id"] in ("runaway_loop", "output_flood"):
+                if atk["id"] in ("runaway_loop", "output_flood", "disk_fill", "memory_bomb"):
                     verdict = "contained" if not got else "not contained"
                 else:
                     verdict = "got through" if got else "stopped"
@@ -431,6 +704,7 @@ def probe(profiles: list[str] | None = None, wall_seconds: float = 2.0) -> dict:
     finally:
         stop.set()
         srv.close()
+        usrv.close()
         if old is None:
             os.environ.pop("LCR_PROBE_SECRET", None)
         else:

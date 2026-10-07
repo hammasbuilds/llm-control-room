@@ -34,6 +34,7 @@ class Core:
         self.gateway = Gateway(
             store, self.providers, self.tenants, self.releases, lambda: self.clock()
         )
+        self.tenants.on_change.append(self.gateway.cache.purge_tenant)
         self.alerts = Alerts(store, lambda: self.clock())
         self.runner = AgentRunner(store, self.gateway)
         self.calls_seen = 0

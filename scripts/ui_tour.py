@@ -15,6 +15,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 BASE, OUT = sys.argv[1], Path(sys.argv[2])
+TOKEN = sys.argv[3] if len(sys.argv) > 3 else ""
 OUT.mkdir(parents=True, exist_ok=True)
 problems: list[str] = []
 
@@ -42,6 +43,15 @@ def main() -> None:
             "response",
             lambda r: problems.append(f"HTTP {r.status} {r.url}") if r.status >= 500 else None,
         )
+
+        def login(pg) -> None:
+            """The launcher opens /#token=...; the page keeps it and clears the address bar."""
+            if TOKEN:
+                pg.goto(f"{BASE}/#token={TOKEN}")
+                pg.wait_for_selector("main .card, main .tiles", timeout=15000)
+                assert "token" not in pg.url, "token left in the address bar"
+
+        login(page)
 
         def go(name: str) -> None:
             page.goto(f"{BASE}/#/{name}")
@@ -93,6 +103,7 @@ def main() -> None:
         # --- observability: drift, alerts, fault injection
         go("observability")
         assert "Prompt drift" in page.inner_text("main")
+        assert page.locator("#f-csv").count() == 1, "export button missing"
         page.select_option("#fi-m", "nano-mock")
         page.click("#fi-set")
         page.wait_for_selector("text=nano-mock: 50% errors", timeout=10000)
@@ -147,6 +158,7 @@ def main() -> None:
         page.click("#pb-go")
         page.wait_for_selector("#pb-out table", timeout=90000)
         assert "got through" in page.inner_text("#pb-out")
+        assert "Switch the sandbox off" in page.inner_text("#pb-out")
         shot("11-sandbox")
 
         # --- tenants
@@ -154,17 +166,20 @@ def main() -> None:
         page.fill("#nt-name", "tour-co")
         page.click("#nt-go")
         page.wait_for_selector("#nt-out >> text=Key (shown only once)", timeout=10000)
+        assert page.locator("[data-f='deny_terms']").count() >= 3, "tenant term fields missing"
         shot("12-tenants")
 
         # --- dark mode and a phone-sized screen
         ctx2 = b.new_context(viewport={"width": 1360, "height": 900}, color_scheme="dark")
         d = ctx2.new_page()
+        login(d)
         d.goto(f"{BASE}/#/overview")
         d.wait_for_selector(".tile")
         d.wait_for_timeout(400)
         d.screenshot(path=str(OUT / "13-overview-dark.png"), full_page=True)
         ctx3 = b.new_context(viewport={"width": 390, "height": 844})
         m = ctx3.new_page()
+        login(m)
         m.goto(f"{BASE}/#/overview")
         m.wait_for_selector(".tile")
         m.wait_for_timeout(400)

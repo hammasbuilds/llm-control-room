@@ -12,21 +12,40 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import threading
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from . import router as routing
-from ._vendor.guardrails import check_input, check_output
 from ._vendor.signature import signature
-from .providers import ChatRequest, ProviderError, ProviderSet, content_words, count_tokens
+from .guard import screen, screen_output
+from .providers import (
+    _DIRECTIVE,
+    ChatRequest,
+    ProviderError,
+    ProviderSet,
+    content_words,
+    count_tokens,
+)
 from .releases import Obs, Releases
 from .store import Store
 from .tenants import Tenants
 
 CACHE_HIT_MS = 2.0
+MAX_CHARS = 200_000  # all message text plus context in one request
+MAX_MESSAGES = 200
+MAX_TOKENS_CAP = 32_768
+LABEL_RE = re.compile(r"[^\w.:/@ \-]")
+
+
+def clean_label(value, default: str, limit: int = 64) -> str:
+    """A feature or model label as it is stored: short, printable, never prompt-sized."""
+    out = LABEL_RE.sub("", str(value or ""))[:limit].strip()
+    return out or default
 
 
 class GatewayError(Exception):
@@ -55,12 +74,18 @@ class GatewayRequest:
 
 
 def normalise_messages(messages: list[dict]) -> list[dict]:
+    if not isinstance(messages, list) or len(messages) > MAX_MESSAGES:
+        raise GatewayError(400, "bad_request", f"messages must be a list of at most {MAX_MESSAGES}")
     out = []
-    for m in messages or []:
+    for m in messages:
+        if not isinstance(m, dict):
+            raise GatewayError(400, "bad_request", "every message must be an object")
         content = m.get("content", "")
         if isinstance(content, list):
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        out.append({"role": str(m.get("role", "user")), "content": str(content)})
+        out.append({"role": str(m.get("role", "user")).lower()[:20], "content": str(content)})
+    if sum(len(m["content"]) for m in out) > MAX_CHARS:
+        raise GatewayError(413, "too_large", f"messages are limited to {MAX_CHARS} characters")
     if not any(m["role"] == "user" and m["content"].strip() for m in out):
         raise GatewayError(400, "bad_request", "messages must contain a non-empty user message")
     return out
@@ -90,29 +115,41 @@ def text_similarity(a: str, b: str) -> float:
 class ResponseCache:
     def __init__(self, clock=time.time, max_entries: int = 2000) -> None:
         self.clock, self.max_entries = clock, max_entries
-        self.data: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+        self.data: OrderedDict[str, tuple[float, dict, str]] = OrderedDict()
         self.hits = self.misses = 0
+        self.lock = threading.Lock()
 
     def get(self, key: str, ttl: float) -> dict | None:
-        item = self.data.get(key)
-        if item and self.clock() - item[0] <= ttl:
-            self.data.move_to_end(key)
-            self.hits += 1
-            return item[1]
-        if item:
-            del self.data[key]
-        self.misses += 1
-        return None
+        with self.lock:
+            item = self.data.get(key)
+            if item and self.clock() - item[0] <= ttl:
+                self.data.move_to_end(key)
+                self.hits += 1
+                return item[1]
+            if item:
+                del self.data[key]
+            self.misses += 1
+            return None
 
-    def put(self, key: str, value: dict) -> None:
-        self.data[key] = (self.clock(), value)
-        self.data.move_to_end(key)
-        while len(self.data) > self.max_entries:
-            self.data.popitem(last=False)
+    def put(self, key: str, value: dict, tenant: str = "") -> None:
+        with self.lock:
+            self.data[key] = (self.clock(), value, tenant)
+            self.data.move_to_end(key)
+            while len(self.data) > self.max_entries:
+                self.data.popitem(last=False)
+
+    def purge_tenant(self, tenant: str) -> int:
+        """Drop every entry one tenant wrote (its policy changed, or the tenant was deleted)."""
+        with self.lock:
+            dead = [k for k, v in self.data.items() if v[2] == tenant]
+            for k in dead:
+                del self.data[k]
+            return len(dead)
 
     def clear(self) -> None:
-        self.data.clear()
-        self.hits = self.misses = 0
+        with self.lock:
+            self.data.clear()
+            self.hits = self.misses = 0
 
 
 @dataclass
@@ -128,6 +165,14 @@ class Gateway:
     def __post_init__(self) -> None:
         if self.cache is None:
             self.cache = ResponseCache(lambda: self.clock())
+        # In-flight requests and the money they are expected to cost, per tenant. A request that
+        # has passed the limit checks but not yet been recorded would otherwise be invisible to
+        # the next one, and N concurrent requests could all pass a budget that fits only one.
+        self._lock = threading.Lock()
+        self._inflight: dict[str, int] = {}
+        self._reserved: dict[str, float] = {}
+        self._release_lock = threading.Lock()
+        self._writes = 0
 
     # ------------------------------------------------------------------ settings
 
@@ -137,18 +182,37 @@ class Gateway:
     # ------------------------------------------------------------------ entry point
 
     def handle(self, req: GatewayRequest) -> dict:
+        held = {"slot": False, "usd": 0.0}
+        try:
+            return self._handle(req, held)
+        finally:
+            with self._lock:
+                if held["slot"]:
+                    self._inflight[req.tenant] = max(0, self._inflight.get(req.tenant, 0) - 1)
+                    self._reserved[req.tenant] = max(
+                        0.0, self._reserved.get(req.tenant, 0.0) - held["usd"]
+                    )
+
+    def _handle(self, req: GatewayRequest, held: dict) -> dict:
         tenant = self.tenants.get(req.tenant)
         if tenant is None:
             raise GatewayError(401, "unknown_tenant", f"no tenant {req.tenant!r}")
         started_at = self.clock()
         messages = normalise_messages(req.messages)
+        if not isinstance(req.context, str) or len(req.context) > MAX_CHARS:
+            raise GatewayError(400, "bad_request", "context must be a string of bounded size")
+        if not (isinstance(req.max_tokens, int) and 1 <= req.max_tokens <= MAX_TOKENS_CAP):
+            req.max_tokens = max(1, min(int(req.max_tokens or 512), MAX_TOKENS_CAP))
+        if not math.isfinite(req.temperature):
+            raise GatewayError(400, "bad_request", "temperature must be a finite number")
+        req.feature = clean_label(req.feature, "default")
         trace = uuid.uuid4().hex[:16]
         base = {
             "trace": trace,
             "at": started_at,
             "tenant": req.tenant,
             "feature": req.feature,
-            "requested": req.model,
+            "requested": clean_label(req.model, "auto", 80),
             "diff_true": req.true_difficulty,
             "source": req.source,
         }
@@ -157,8 +221,12 @@ class Gateway:
         redactions: list[str] = []
         guarded = []
         for m in messages:
-            res = check_input(
-                m["content"], redact_pii=tenant["redact_pii"], block_injection=m["role"] == "user"
+            res = screen(
+                m["content"],
+                redact_pii=tenant["redact_pii"],
+                check_injection=m["role"] != "system",
+                deny_terms=tenant["deny_terms"],
+                redact_terms=tenant["redact_terms"],
             )
             if not res.allowed:
                 self._record(
@@ -171,10 +239,33 @@ class Gateway:
                     400, "blocked", "request blocked by input guardrails", findings=res.findings
                 )
             redactions += res.findings
-            guarded.append({"role": m["role"], "content": res.text})
+            # a tenant must not be able to steer the mock provider's test directives
+            text = _DIRECTIVE.sub(lambda d: "[ [" + d.group(0)[2:], res.text)
+            guarded.append({"role": m["role"], "content": text})
+        # an instruction split across messages is still one instruction to the model
+        joined = screen(
+            "\n".join(m["content"] for m in messages if m["role"] != "system"),
+            redact_pii=False,
+            check_injection=True,
+        )
+        if not joined.allowed:
+            self._record(
+                base,
+                error="blocked: " + ", ".join(joined.findings),
+                error_kind="blocked",
+                prompt_len=sum(len(m["content"]) for m in messages),
+            )
+            raise GatewayError(
+                400, "blocked", "request blocked by input guardrails", findings=joined.findings
+            )
         context = req.context
         if context:
-            cres = check_input(context, redact_pii=tenant["redact_pii"])
+            cres = screen(
+                context,
+                redact_pii=tenant["redact_pii"],
+                deny_terms=tenant["deny_terms"],
+                redact_terms=tenant["redact_terms"],
+            )
             if not cres.allowed:
                 self._record(
                     base, error="blocked: " + ", ".join(cres.findings), error_kind="blocked"
@@ -185,20 +276,25 @@ class Gateway:
                     "retrieved context blocked by input guardrails",
                     findings=cres.findings,
                 )
-            context = cres.text
+            context = _DIRECTIVE.sub(lambda d: "[ [" + d.group(0)[2:], cres.text)
             redactions += cres.findings
         redactions = sorted(set(redactions))
         user_text = next(m["content"] for m in reversed(guarded) if m["role"] == "user")
         route_text = "\n".join(m["content"] for m in guarded if m["role"] == "user")
 
-        # 2. rate limit
+        # 2. rate limit (counts requests still in flight, not only finished ones)
         window = 60.0
-        used = self.store.one(
-            "SELECT COUNT(*) AS n FROM calls WHERE tenant=? AND at>? AND at<=? AND "
-            "shadow=0 AND error_kind NOT IN ('rate_limited','budget','blocked')",
-            (req.tenant, started_at - window, started_at),
-        )["n"]
-        if used >= tenant["rpm"]:
+        with self._lock:
+            used = self.store.one(
+                "SELECT COUNT(*) AS n FROM calls WHERE tenant=? AND at>? AND at<=? AND "
+                "shadow=0 AND error_kind NOT IN ('rate_limited','budget','blocked')",
+                (req.tenant, started_at - window, started_at),
+            )["n"]
+            over = used + self._inflight.get(req.tenant, 0) >= tenant["rpm"]
+            if not over:
+                self._inflight[req.tenant] = self._inflight.get(req.tenant, 0) + 1
+                held["slot"] = True
+        if over:
             self._record(
                 base, error="rate limited", error_kind="rate_limited", redactions=redactions
             )
@@ -254,13 +350,19 @@ class Gateway:
                 "version": version,
             }
 
-        # 5. budget
-        spent = self.store.one(
-            "SELECT COALESCE(SUM(usd),0) AS s FROM calls WHERE tenant=? AND at>? AND at<=? "
-            "AND shadow=0",
-            (req.tenant, started_at - tenant["budget_window_s"], started_at),
-        )["s"]
-        if spent + decision.expected_usd > tenant["budget_usd"]:
+        # 5. budget: money already spent (shadow runs included: the tenant's request caused
+        #    them) plus money reserved by requests still in flight
+        with self._lock:
+            spent = self.store.one(
+                "SELECT COALESCE(SUM(usd),0) AS s FROM calls WHERE tenant=? AND at>? AND at<=?",
+                (req.tenant, started_at - tenant["budget_window_s"], started_at),
+            )["s"]
+            reserved = self._reserved.get(req.tenant, 0.0)
+            over = spent + reserved + decision.expected_usd > tenant["budget_usd"]
+            if not over:
+                self._reserved[req.tenant] = reserved + decision.expected_usd
+                held["usd"] = decision.expected_usd
+        if over:
             self._record(base, error="budget exhausted", error_kind="budget", redactions=redactions)
             raise GatewayError(
                 429,
@@ -353,7 +455,9 @@ class Gateway:
             )
 
         # 8. output guard, cost, grounding
-        out = check_output(comp.text)
+        out = screen_output(
+            comp.text, redact_pii=tenant["redact_pii"], redact_terms=tenant["redact_terms"]
+        )
         text = out.text
         redactions = sorted(set(redactions + out.findings))
         info = self.providers.info(used_model)
@@ -391,6 +495,7 @@ class Gateway:
                     "grounding": grounding,
                     "quality_ok": rec["quality_ok"],
                 },
+                req.tenant,
             )
         self._release_observe(release, version, rec, tag)
 
@@ -401,7 +506,8 @@ class Gateway:
             except Exception:  # a shadow must never be able to break serving
                 pass
         if release:
-            self.releases.check(release)
+            with self._release_lock:
+                self.releases.check(release)
         for cb in self.on_call:
             cb()
         return self._result(rec, text, decision, redactions, attempts, used_model)
@@ -570,7 +676,20 @@ class Gateway:
             f"INSERT INTO calls({','.join(self.COLS)}) VALUES({','.join('?' * len(self.COLS))})",
             [row[c] for c in self.COLS],
         )
+        self._writes += 1
+        if self._writes % 500 == 0:
+            self.prune_refusals()
         return rec
+
+    def prune_refusals(self, keep: int = 100_000) -> None:
+        """Refused requests (blocked, rate limited, over budget) cost nothing and any key holder
+        can make unlimited numbers of them, so only the newest ``keep`` are retained. Rows that
+        carry spend are never pruned: the budget window reads them."""
+        self.store.run(
+            "DELETE FROM calls WHERE error_kind IN ('blocked','rate_limited','budget') "
+            "AND id <= (SELECT MAX(id) FROM calls) - ?",
+            (keep,),
+        )
 
     def _result(self, rec, text, decision, redactions, attempts, model) -> dict:
         info = self.providers.info(model)

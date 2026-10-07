@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import enum
 import json
+import math
 import operator
 import re
 import threading
@@ -26,6 +27,7 @@ from typing import Any
 
 from ._vendor.limits import Budget, BudgetExceeded
 from .gateway import Gateway, GatewayError, GatewayRequest
+from .guard import screen
 from .sandbox import PROFILES, docker_available, docker_status, run_code
 from .store import Store
 
@@ -371,6 +373,14 @@ DEFAULT_LIMITS = {
     "max_tool_calls": 20,
     "max_repeats": 3,
 }
+LIMIT_CAPS = {
+    "max_steps": 100,
+    "max_seconds": 600.0,
+    "max_usd": 10.0,
+    "max_tool_calls": 200,
+    "max_repeats": 50,
+}
+MAX_RUNNING = 8  # agent threads alive at once
 CEILINGS = {"read": RiskTier.READ, "write": RiskTier.WRITE, "external": RiskTier.EXTERNAL}
 
 
@@ -423,10 +433,18 @@ class AgentRunner:
         for k in merged:
             if k not in DEFAULT_LIMITS:
                 raise ValueError(f"unknown limit {k!r}")
-            if float(merged[k]) <= 0:
-                raise ValueError(f"{k} must be positive")
+            v = float(merged[k])
+            if not math.isfinite(v) or v <= 0:
+                raise ValueError(f"{k} must be a positive number")
+            if v > LIMIT_CAPS[k]:
+                raise ValueError(f"{k} may not exceed {LIMIT_CAPS[k]:g}")
+        self.threads = {k: t for k, t in self.threads.items() if t.is_alive()}
+        if len(self.threads) >= MAX_RUNNING:
+            raise ValueError(f"{MAX_RUNNING} runs are already in progress; wait or cancel one")
         rid = uuid.uuid4().hex[:10]
-        goal = goal.strip() or SCENARIOS[scenario]["goal"]
+        # the goal is the only prompt-like text a run stores, so secrets and PII are removed first
+        goal = str(goal).strip()[:2000] or SCENARIOS[scenario]["goal"]
+        goal = screen(goal, redact_pii=True, check_injection=False).text
         self.store.run(
             "INSERT INTO runs(id, created, tenant, scenario, goal, status, limits, profile) "
             "VALUES(?,?,?,?,?,?,?,?)",

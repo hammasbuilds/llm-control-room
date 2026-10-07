@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS tenants (
     budget_usd REAL NOT NULL DEFAULT 5.0, budget_window_s REAL NOT NULL DEFAULT 86400,
     rpm INTEGER NOT NULL DEFAULT 600, allowed_models TEXT NOT NULL DEFAULT '[]',
     redact_pii INTEGER NOT NULL DEFAULT 1, cache_enabled INTEGER NOT NULL DEFAULT 1,
-    min_quality REAL NOT NULL DEFAULT 0.75, fallbacks TEXT NOT NULL DEFAULT '[]');
+    min_quality REAL NOT NULL DEFAULT 0.75, fallbacks TEXT NOT NULL DEFAULT '[]',
+    deny_terms TEXT NOT NULL DEFAULT '[]', redact_terms TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     prefix TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', created REAL NOT NULL,
@@ -81,6 +82,13 @@ class Store:
             self.con.execute("PRAGMA journal_mode=WAL")
             self.con.execute("PRAGMA synchronous=NORMAL")
             self.con.executescript(SCHEMA)
+            # databases made by an earlier version lack the newer tenant columns
+            have = {r["name"] for r in self.con.execute("PRAGMA table_info(tenants)")}
+            for col in ("deny_terms", "redact_terms"):
+                if col not in have:
+                    self.con.execute(
+                        f"ALTER TABLE tenants ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'"
+                    )
         self._depth = 0
 
     @contextmanager

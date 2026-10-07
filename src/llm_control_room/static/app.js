@@ -4,6 +4,16 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const S = { meta: null, timers: [], token: localStorage.getItem("lcr-token") || "" };
+// The launcher opens the page as /#token=...: keep the token, then take it out of the address bar.
+{
+  const m = /[#&]token=([^&]+)/.exec(location.hash);
+  if (m) {
+    S.token = decodeURIComponent(m[1]);
+    try { localStorage.setItem("lcr-token", S.token); } catch { /* private mode: the token lives for this tab */ }
+    history.replaceState(null, "", location.pathname + location.search + (location.hash.replace(/[#&]token=[^&]+/, "") || ""));
+  }
+}
+const UNSAFE = "The subprocess profile runs this code with YOUR files, environment and network. Run it anyway?";
 const COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
 const MODEL_COLOR = {};
 const modelColor = (m) => (MODEL_COLOR[m] ??= COLORS[Object.keys(MODEL_COLOR).length % COLORS.length]);
@@ -226,7 +236,7 @@ routes.observability = async (el) => {
   <div class="card" style="margin-bottom:14px"><div class="row"><div><label>Window</label><select id="f-h">${[1, 6, 24, 72, 168].map((h) => `<option value="${h}" ${String(h) === hours ? "selected" : ""}>last ${h} h</option>`).join("")}</select></div>
   <div><label>Tenant</label><select id="f-t"><option value="">all</option>${tenantOptions(tenant)}</select></div>
   <div><label>Feature</label><select id="f-f"><option value="">all</option>${features.map((f) => `<option ${f === feature ? "selected" : ""}>${esc(f)}</option>`).join("")}</select></div>
-  <button id="f-go" class="primary">Apply</button><button id="f-alerts">Evaluate alerts now</button></div></div>
+  <button id="f-go" class="primary">Apply</button><button id="f-alerts">Evaluate alerts now</button><button id="f-csv" title="Per-call cost and latency, no prompt text">Export CSV</button></div></div>
   ${s.calls ? tiles([
     { k: "Calls", v: num(s.calls) }, { k: "Spend", v: usd(s.usd, 3), d: `${usd(s.usd_per_success)} per successful answer` },
     { k: "p50 / p95 / p99", v: `${ms(s.p50_ms)}`, d: `${ms(s.p95_ms)} / ${ms(s.p99_ms)} (cache hits excluded)` },
@@ -247,6 +257,11 @@ routes.observability = async (el) => {
   </div>
   <div class="card" style="margin-top:14px"><h2>Recent calls (no prompt text)</h2><div class="scroll"><table><tr><th>Time</th><th>Tenant</th><th>Feature</th><th>Model</th><th>Route</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">Latency</th><th>Flags</th></tr>${calls.map((c) => `<tr><td>${hhmm(c.at)}</td><td>${esc(c.tenant)}</td><td>${esc(c.feature)}</td><td>${esc(c.model || "-")}</td><td>${esc(["easy", "medium", "hard"][c.diff_est])}</td><td class="n">${c.prompt_tokens + c.completion_tokens}</td><td class="n">${usd(c.usd, 6)}</td><td class="n">${ms(c.latency_ms)}</td><td>${c.cached ? chip("cache", "good") : ""}${c.fallback_used ? chip("fallback", "warn") : ""}${c.redactions.length ? chip("redacted", "info") : ""}${c.error ? chip(c.error_kind || "error", "bad") : ""}${c.release ? chip(c.release + " v" + c.version) : ""}</td></tr>`).join("")}</table></div></div>` : `<div class="card empty">No calls in this window.</div>`}`;
   $("#f-go").onclick = () => { location.hash = `#/observability?hours=${$("#f-h").value}&tenant=${$("#f-t").value}&feature=${$("#f-f").value}`; };
+  $("#f-csv").onclick = guard(async () => {
+    const r = await fetch(`/api/export/calls.csv?hours=${hours}&tenant=${encodeURIComponent(tenant)}&include_simulated=true`, { headers: { "X-Admin-Token": S.token } });
+    if (!r.ok) throw new Error(`export failed: HTTP ${r.status}`);
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "llm-control-room-calls.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
   $("#f-alerts").onclick = guard(async () => { const r = await api("/api/alerts/evaluate", "POST"); toast(`${r.fired.length} alert(s) fired`); route(); });
   const set = $("#fi-set"); if (set) {
     set.onclick = guard(async () => { await api("/api/faults", "POST", { model: $("#fi-m").value, error_rate: +$("#fi-e").value, latency_mult: +$("#fi-l").value }); toast("Fault injected"); route(); });
@@ -327,7 +342,7 @@ routes.agents = async (el) => {
   $$(".scen").forEach((x) => (x.onclick = () => { agentSel = x.dataset.s; fill(); })); fill();
   $("#a-go").onclick = guard(async () => {
     const limits = {}; $$("[data-l]").forEach((i) => (limits[i.dataset.l] = +i.value));
-    const r = await api("/api/runs", "POST", { tenant: $("#a-tenant").value, scenario: agentSel, goal: $("#a-goal").value, limits, profile: $("#a-prof").value, ceiling: $("#a-ceil").value });
+    const r = await api("/api/runs", "POST", { tenant: $("#a-tenant").value, scenario: agentSel, goal: $("#a-goal").value, limits, profile: $("#a-prof").value, ceiling: $("#a-ceil").value, allow_unsafe: $("#a-prof").value === "subprocess" && confirm(UNSAFE) });
     currentRun = r.id; lastSeq = 0; $("#r-log").innerHTML = ""; poll();
   });
   const list = async () => { const runs = await api("/api/runs"); if (!$("#r-list")) return;
@@ -370,11 +385,11 @@ print("hello from the sandbox")
 print("USERNAME is", os.environ.get("USERNAME"))
 print(open(__file__).read()[:40])</textarea>
   <div style="margin-top:8px"><button class="primary" id="sb-go">Run</button></div><div id="sb-out"></div></div>
-  <div class="card"><h2>Attack suite</h2><div class="sub">Seven real attack programs per profile. The harness plants a secret, listens on a loopback port and watches the disk, so "got through" is evidence it saw itself.</div>
+  <div class="card"><h2>Attack suite</h2><div class="sub">Twelve real attack programs per profile. The harness plants a secret, listens on a loopback port and watches the disk, so "got through" is evidence it saw itself.</div>
   <div style="margin:8px 0"><button class="primary" id="pb-go">Run the attack suite</button> <span class="sub" id="pb-wait"></span></div><div id="pb-out"></div></div></div>
   ${profs.some((p) => !p.available) ? `<div class="banner" style="margin-top:14px">${profs.filter((p) => !p.available).map((p) => esc(p.name) + ": " + esc(p.reason)).join("; ")}. The restricted profile is an audit hook inside Python, a speed bump rather than a security boundary; use Docker for untrusted code.</div>` : ""}`;
   const desc = () => ($("#sb-desc").textContent = profs.find((p) => p.name === $("#sb-prof").value).description); desc(); $("#sb-prof").onchange = desc;
-  $("#sb-go").onclick = guard(async () => { $("#sb-out").innerHTML = `<div class="sub">Running...</div>`; const r = await api("/api/sandbox/run", "POST", { code: $("#sb-code").value, profile: $("#sb-prof").value, wall_seconds: +$("#sb-t").value });
+  $("#sb-go").onclick = guard(async () => { $("#sb-out").innerHTML = `<div class="sub">Running...</div>`; const r = await api("/api/sandbox/run", "POST", { code: $("#sb-code").value, profile: $("#sb-prof").value, wall_seconds: +$("#sb-t").value, allow_unsafe: $("#sb-prof").value === "subprocess" && confirm(UNSAFE) });
     $("#sb-out").innerHTML = `<div style="margin-top:8px">${chip("exit " + r.exit_code, r.exit_code === 0 ? "good" : "bad")}${r.timed_out ? chip("timed out, killed", "warn") : ""}${r.output_truncated ? chip("output capped, killed", "warn") : ""}${chip(r.elapsed_s + " s")}</div>${r.stdout ? `<h3>stdout</h3><pre>${esc(r.stdout)}</pre>` : ""}${r.stderr ? `<h3>stderr</h3><pre>${esc(r.stderr)}</pre>` : ""}`; });
   $("#pb-go").onclick = guard(async () => { $("#pb-wait").textContent = "Running (takes several seconds)..."; const r = await api("/api/sandbox/probe", "POST", {}); $("#pb-wait").textContent = "";
     const bad = Object.entries(r.unusable || {});
@@ -389,6 +404,7 @@ routes.tenants = async (el) => {
     <div class="sub">${num(t.calls_in_window)} calls in the ${t.budget_window_s / 3600} h window. Budget and rate limits are checked before the call.</div>
     <div class="row"><div><label>Budget $</label><input data-f="budget_usd" type="number" step="any" value="${t.budget_usd}" style="width:90px"></div><div><label>Requests/min</label><input data-f="rpm" type="number" value="${t.rpm}" style="width:80px"></div><div><label>Min quality (router)</label><input data-f="min_quality" type="number" step="0.05" min="0" max="1" value="${t.min_quality}" style="width:80px"></div></div>
     <div class="row"><div><label>Allowed models (blank = all)</label><input data-f="allowed_models" value="${esc(t.allowed_models.join(", "))}" size="26"></div><div><label>Fallback chain</label><input data-f="fallbacks" value="${esc(t.fallbacks.join(", "))}" size="22"></div></div>
+    <div class="row"><div><label>Block these terms</label><input data-f="deny_terms" placeholder="comma separated" value="${esc((t.deny_terms || []).join(", "))}" size="22"></div><div><label>Redact these terms</label><input data-f="redact_terms" placeholder="comma separated" value="${esc((t.redact_terms || []).join(", "))}" size="22"></div></div>
     <div class="row"><label style="display:inline"><input type="checkbox" data-f="redact_pii" ${t.redact_pii ? "checked" : ""}> redact PII (emails, cards, CNIC, phone)</label><label style="display:inline"><input type="checkbox" data-f="cache_enabled" ${t.cache_enabled ? "checked" : ""}> response cache</label></div>
     <div class="sub">Secrets (cloud keys, tokens) are always redacted; prompt injection is always blocked.</div>
     <div style="margin-top:8px"><button class="primary" data-save="${esc(t.name)}">Save policy</button> <button class="danger" data-del="${esc(t.name)}">Delete tenant</button></div>
@@ -397,7 +413,7 @@ routes.tenants = async (el) => {
     <div class="card"><h2>New tenant</h2><div class="row"><div><label>Name</label><input id="nt-name" placeholder="lowercase-name"></div><button class="primary" id="nt-go">Create with first key</button></div><div id="nt-out"></div></div></div>`;
   const list = (v) => v.split(",").map((x) => x.trim()).filter(Boolean);
   $$("[data-save]").forEach((b) => (b.onclick = guard(async () => { const card = b.closest(".card"), body = {};
-    $$("[data-f]", card).forEach((i) => { const f = i.dataset.f; body[f] = i.type === "checkbox" ? i.checked : ["allowed_models", "fallbacks"].includes(f) ? list(i.value) : +i.value; });
+    $$("[data-f]", card).forEach((i) => { const f = i.dataset.f; body[f] = i.type === "checkbox" ? i.checked : ["allowed_models", "fallbacks", "deny_terms", "redact_terms"].includes(f) ? list(i.value) : +i.value; });
     await api("/api/tenants/" + b.dataset.save, "PUT", body); toast("Saved"); route(); })));
   $$("[data-del]").forEach((b) => (b.onclick = guard(async () => { if (confirm("Delete " + b.dataset.del + " and its keys?")) { await api("/api/tenants/" + b.dataset.del, "DELETE"); route(); } })));
   $$("[data-rev]").forEach((b) => (b.onclick = guard(async () => { await api("/api/keys/" + b.dataset.rev, "DELETE"); route(); })));

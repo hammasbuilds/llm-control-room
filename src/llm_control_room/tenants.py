@@ -20,6 +20,8 @@ FIELDS = (
     "cache_enabled",
     "min_quality",
     "fallbacks",
+    "deny_terms",
+    "redact_terms",
 )
 
 
@@ -35,6 +37,8 @@ def _row(r: dict) -> dict:
     out = dict(r)
     out["allowed_models"] = json.loads(r["allowed_models"])
     out["fallbacks"] = json.loads(r["fallbacks"])
+    out["deny_terms"] = json.loads(r["deny_terms"])
+    out["redact_terms"] = json.loads(r["redact_terms"])
     out["redact_pii"] = bool(r["redact_pii"])
     out["cache_enabled"] = bool(r["cache_enabled"])
     return out
@@ -57,6 +61,13 @@ def _validate(p: dict) -> dict:
             if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                 raise TenantError(f"{k} must be a list of model ids")
             v = json.dumps(v)
+        elif k in ("deny_terms", "redact_terms"):
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise TenantError(f"{k} must be a list of strings")
+            v = [t.strip() for t in v if t.strip()]
+            if len(v) > 100 or any(len(t) > 200 for t in v):
+                raise TenantError(f"{k}: at most 100 terms of at most 200 characters")
+            v = json.dumps(v)
         else:
             v = 1 if v else 0
         out[k] = v
@@ -67,6 +78,13 @@ class Tenants:
     def __init__(self, store: Store, clock=time.time) -> None:
         self.store = store
         self.clock = clock
+        # called with the tenant name whenever its policy changes or it is deleted, so a cache
+        # that was filled under the old policy (or for a tenant that no longer exists) is dropped
+        self.on_change: list = []
+
+    def _changed(self, name: str) -> None:
+        for cb in self.on_change:
+            cb(name)
 
     def create(self, name: str, **policy) -> dict:
         if not NAME_RE.match(name or ""):
@@ -88,11 +106,17 @@ class Tenants:
         if vals:
             sets = ",".join(f"{k}=?" for k in vals)
             self.store.run(f"UPDATE tenants SET {sets} WHERE name=?", [*vals.values(), name])
+            self._changed(name)
         return self.get(name)
 
     def delete(self, name: str) -> None:
-        self.store.run("DELETE FROM tenants WHERE name=?", (name,))
-        self.store.run("DELETE FROM api_keys WHERE tenant=?", (name,))
+        with self.store.transaction():
+            self.store.run("DELETE FROM tenants WHERE name=?", (name,))
+            self.store.run("DELETE FROM api_keys WHERE tenant=?", (name,))
+            # keep the history for the record, but under a name nobody can register again, so a
+            # tenant created later with the same name does not inherit this one's spend
+            self.store.run("UPDATE calls SET tenant=? WHERE tenant=?", (f"{name}~deleted", name))
+        self._changed(name)
 
     def get(self, name: str) -> dict | None:
         r = self.store.one("SELECT * FROM tenants WHERE name=?", (name,))

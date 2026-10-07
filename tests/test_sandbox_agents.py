@@ -103,12 +103,17 @@ def test_probe_matrix_is_judged_by_evidence():
         "network_egress",
         "host_file_write",
         "spawn_process",
+        "host_file_delete",
+        "udp_egress",
+        "hook_tamper",
     ):
         assert by[atk]["subprocess"]["verdict"] == "got through", atk
         assert by[atk]["restricted"]["verdict"] == "stopped", atk
     assert by["runaway_loop"]["restricted"]["verdict"] == "contained"
     assert by["output_flood"]["restricted"]["verdict"] == "contained"
-    assert r["got_through"]["restricted"] == 0 and r["got_through"]["subprocess"] == 5
+    for atk in ("disk_fill", "memory_bomb"):
+        assert by[atk]["restricted"]["verdict"] == "contained", atk
+    assert r["got_through"]["restricted"] == 0 and r["got_through"]["subprocess"] >= 8
 
 
 # ---------------------------------------------------------------- agents
@@ -316,5 +321,8 @@ def test_hardened_profile_in_docker_stops_the_attacks():
     assert r["profiles"] == ["hardened"] and not r["unusable"]
     assert r["got_through"]["hardened"] == 0
     assert (
-        sandbox.run_code("import os; print(os.getuid())", "hardened")["stdout"].strip() == "65534"
+        sandbox.run_code("import os; print(os.getuid())", "hardened", wall_seconds=30)[
+            "stdout"
+        ].strip()
+        == "65534"
     )

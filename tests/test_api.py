@@ -65,7 +65,10 @@ def test_chat_errors(client):
         == 400
     )
     assert client.post("/v1/chat/completions", headers=H, json={"messages": []}).status_code == 400
-    assert client.post("/v1/chat/completions", headers=H, content=b"not json").status_code == 400
+    jh = {**H, "Content-Type": "application/json"}
+    assert client.post("/v1/chat/completions", headers=jh, content=b"not json").status_code == 400
+    # a body that is not declared JSON is refused before it is parsed (CSRF via form posts)
+    assert client.post("/v1/chat/completions", headers=H, content=b"not json").status_code == 415
     assert chat(client, model="nope").status_code == 400
 
 
@@ -121,7 +124,7 @@ def test_admin_token_is_enforced_when_set(monkeypatch):
     from llm_control_room.app import create_app
 
     monkeypatch.setenv("LCR_ADMIN_TOKEN", "s3cret")
-    c = TestClient(create_app(":memory:"))
+    c = TestClient(create_app(":memory:"), base_url="http://localhost")
     assert c.get("/api/meta").status_code == 401
     assert c.get("/api/meta", headers={"X-Admin-Token": "s3cret"}).status_code == 200
     assert chat(c).status_code == 200, "the gateway uses tenant keys, not the admin token"
@@ -317,7 +320,7 @@ def test_sandbox_endpoints(client):
     assert r["stdout"].strip() == "hi" and r["exit_code"] == 0
     assert client.post("/api/sandbox/run", json={"code": "1", "profile": "nope"}).status_code == 400
     p = client.post("/api/sandbox/probe", json={"profiles": ["restricted"]}).json()
-    assert p["got_through"]["restricted"] == 0 and len(p["attacks"]) == 7
+    assert p["got_through"]["restricted"] == 0 and len(p["attacks"]) == 12
 
 
 def test_simulator_endpoints_and_reset(client):
