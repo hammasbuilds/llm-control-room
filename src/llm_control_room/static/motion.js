@@ -69,8 +69,33 @@
     const w = i.style.width; i.style.width = "0"; void i.offsetWidth; i.style.width = w;
   }
 
+
+  /* floating labels and valid check marks for simple label + text/number input pairs */
+  function floatField(root) {
+    root.querySelectorAll("div > label + input").forEach((inp) => {
+      const w = inp.parentElement, lab = inp.previousElementSibling;
+      if (w.classList.contains("fl") || w.children.length !== 2 || !/^(text|number|search|)$/.test(inp.getAttribute("type") || "")) return;
+      if (inp.hasAttribute("data-l") && !lab.textContent.trim()) return;
+      if (!lab.textContent.replace(/ /g, "").trim()) return;
+      w.classList.add("fl");
+      const ph = inp.getAttribute("placeholder");
+      if (ph) w.classList.add("up"); else inp.setAttribute("placeholder", " ");
+      if (inp.type === "number" || inp.value) w.classList.add("up");
+      lab.removeAttribute("for"); lab.style.display = "";
+      inp.style.minWidth = Math.max(inp.type === "number" ? 104 : 0, Math.ceil(lab.scrollWidth * 0.9 + 30)) + "px";
+      const upd = () => {
+        const filled = inp.value.trim() !== "";
+        w.classList.toggle("ok", filled && inp.checkValidity());
+        w.classList.toggle("bad", filled && !inp.checkValidity());
+        if (!ph && inp.type !== "number") w.classList.toggle("up", filled);
+      };
+      inp.addEventListener("input", upd); inp.addEventListener("blur", upd);
+    });
+  }
+
   function enhance(root) {
     if (root.nodeType !== 1) return;
+    floatField(root);
     const items = root.matches(".card, .tile, .scen") ? [root] : [];
     items.push(...root.querySelectorAll(".card, .tile, .scen"));
     let n = 0;

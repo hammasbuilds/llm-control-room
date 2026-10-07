@@ -1,3 +1,10 @@
+@font-face { font-family: "JetBrains Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("/static/fonts/jbm-400.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 600; font-style: normal; font-display: swap; src: url("/static/fonts/jbm-600.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 700; font-style: normal; font-display: swap; src: url("/static/fonts/jbm-700.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-weight: 400; font-style: normal; font-display: swap; src: url("/static/fonts/sg-400.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-weight: 500; font-style: normal; font-display: swap; src: url("/static/fonts/sg-500.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-weight: 600; font-style: normal; font-display: swap; src: url("/static/fonts/sg-600.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-weight: 700; font-style: normal; font-display: swap; src: url("/static/fonts/sg-700.woff2") format("woff2"); }
 /* LLM Control Room: mission-control identity. Dark navy default; cool-grey light mode. */
 :root {
   --bg: #eef1f6; --panel: #ffffff; --panel2: #e8ecf4; --ink: #0e1630; --muted: #4a5679;
@@ -236,3 +243,20 @@ nav a.item { transition: background var(--dur-base), color var(--dur-base), box-
 nav a.item:hover { transform: translateX(2px); }
 .bars .t i { transition: width 600ms var(--ease-out); }
 @media (prefers-reduced-motion: reduce) { .ripple, .scanning::after { display: none; } button:hover:not(:disabled), button:active:not(:disabled), .card:hover, .tile:hover, .scen:hover, nav a.item:hover { transform: none; } }
+
+/* floating labels + valid check mark (applied by motion.js to label+input pairs) */
+.fl { position: relative; margin-top: 12px; }
+.fl > label { position: absolute; left: 10px; top: 50%; margin: 0; padding: 0 4px; transform: translateY(-50%); pointer-events: none; z-index: 1;
+  border-radius: 4px; transition: transform var(--dur-base) var(--ease-std), color var(--dur-base), background-color var(--dur-base); white-space: nowrap; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; }
+.fl > input { padding-top: 9px; padding-bottom: 9px; }
+.fl:focus-within > label, .fl.up > label, .fl > input:not(:placeholder-shown) ~ label, .fl > label:has(+ input:not(:placeholder-shown)) {
+  transform: translateY(-190%) scale(.85); transform-origin: left center; background: var(--panel); color: var(--accent); }
+.fl:not(:focus-within) > label { color: var(--muted); }
+.fl.up:not(:focus-within) > label { color: var(--muted); }
+.fl.ok > input { border-color: color-mix(in srgb, var(--good) 70%, var(--line)); padding-right: 28px; }
+.fl.ok::after { content: ""; position: absolute; right: 9px; top: 50%; width: 5px; height: 10px; margin-top: -8px; border: solid var(--good); border-width: 0 2px 2px 0;
+  transform: rotate(45deg); pointer-events: none; animation: tick var(--dur-base) var(--ease-spring); }
+.fl.ok > input[type=number] { padding-right: 40px; } .fl.ok:has(> input[type=number])::after { right: 24px; }
+.fl.bad > label { color: var(--bad) !important; }
+@keyframes tick { from { opacity: 0; transform: rotate(45deg) scale(.3); } }
+@media (prefers-reduced-motion: reduce) { .fl.ok::after { animation: none; } .fl > label { transition: none; } }
