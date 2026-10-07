@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> None:
         prog="llm-control-room", description="A self-hosted control plane for LLM apps."
     )
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8780)
+    ap.add_argument("--port", type=int, default=8790)
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
     ap.add_argument("--no-seed", action="store_true", help="do not simulate a first day of traffic")
     ap.add_argument("--db", help="SQLite file (default: ~/.llm-control-room/control-room.sqlite3)")

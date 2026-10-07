@@ -19,7 +19,7 @@ Apps call one OpenAI-compatible endpoint. The control room authenticates the ten
 ## Run it
 
 ```
-uv run llm-control-room        # starts on http://127.0.0.1:8780, opens the browser, simulates a first day of traffic
+uv run llm-control-room        # starts on http://127.0.0.1:8790, opens the browser, simulates a first day of traffic
 ```
 
 or double-click `run.bat`. Options: `--port`, `--no-browser`, `--no-seed`, `--db FILE`. Data lives in `~/.llm-control-room/control-room.sqlite3` (set `LCR_HOME` to move it). Python 3.11+ and [uv](https://docs.astral.sh/uv/). Nothing leaves the machine.
@@ -27,7 +27,7 @@ or double-click `run.bat`. Options: `--port`, `--no-browser`, `--no-seed`, `--db
 Call it from an app (demo keys `lcr-demo-acme`, `lcr-demo-globex`, `lcr-demo-initech`; create real ones under Tenants and keys):
 
 ```
-curl http://127.0.0.1:8780/v1/chat/completions -H "Authorization: Bearer lcr-demo-acme" \
+curl http://127.0.0.1:8790/v1/chat/completions -H "Authorization: Bearer lcr-demo-acme" \
   -H "Content-Type: application/json" -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
@@ -130,7 +130,7 @@ uv run pytest -q          # 125 tests: providers (incl. stub OpenAI/Ollama/Anthr
 uv run ruff check .
 uv run python demo.py
 uv run python scripts/release_check.py 30
-uv run --with playwright python scripts/ui_tour.py http://127.0.0.1:8780 docs/screenshots   # headless browser tour
+uv run --with playwright python scripts/ui_tour.py http://127.0.0.1:8790 docs/screenshots   # headless browser tour
 ```
 
 MIT licence.
