@@ -310,7 +310,8 @@ uv run python scripts/release_check.py 30
 LCR_ADMIN_TOKEN=tok uv run llm-control-room --no-browser --port 8851 --db tmp.sqlite3   # a fresh database
 uv run --with playwright python scripts/ui_tour.py http://127.0.0.1:8851 docs/screenshots tok   # headless browser tour
 uv run --with playwright python scripts/ui_audit.py   # every control on every page, 1440 dark + light and 390 px; exits non-zero on any problem
-                          # (2026-10-08: 1,275 controls found, 1,272 exercised by the sweep, Stop x3 by its flow, 0 problems)
+                          # (2026-10-08: 1,275 controls found over the 3 layouts, 1,272 exercised, 0 problems; the other 3 are
+                          #  Stop, disabled when the sweep reached it and pressed mid-batch by its own flow)
 ```
 
 MIT licence.
