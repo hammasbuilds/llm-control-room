@@ -6,6 +6,8 @@ Apps call one OpenAI-compatible endpoint. The control room authenticates the ten
 
 **Who it is for.** Teams and solo builders who run LLM apps and want one self-hosted place that gates, routes, prices and watches every call.
 
+**Showcase page:** [llm-control-room.vercel.app](https://llm-control-room.vercel.app) shows every feature as captioned screenshots. The app itself runs on your own computer (see Run it).
+
 ## What it does
 
 - Try-it, Playground and batch: send one prompt or a file of prompts and see route, cost, cache, redactions and blocks
