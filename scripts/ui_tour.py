@@ -22,11 +22,7 @@ problems: list[str] = []
 
 def main() -> None:
     with sync_playwright() as p:
-        # prefer a full Chromium from the Playwright cache when the headless shell is missing
-        found = sorted(
-            Path.home().glob("AppData/Local/ms-playwright/chromium-*/chrome-win64/chrome.exe")
-        )
-        b = p.chromium.launch(executable_path=str(found[-1])) if found else p.chromium.launch()
+        b = p.chromium.launch(channel="msedge")
         ctx = b.new_context(viewport={"width": 1360, "height": 900}, color_scheme="light")
         page = ctx.new_page()
         page.on(
@@ -59,7 +55,15 @@ def main() -> None:
             page.wait_for_timeout(400)
 
         def shot(name: str, full: bool = True) -> None:
-            page.screenshot(path=str(OUT / f"{name}.png"), full_page=full)
+            # wait out toasts, then grow the viewport to the page so the sticky sidebar stays on top
+            page.wait_for_function("!document.querySelector('#toasts .toast')", timeout=15000)
+            if full:
+                h = page.evaluate("Math.max(document.documentElement.scrollHeight, 900)")
+                page.set_viewport_size({"width": 1360, "height": int(h)})
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(300)
+            page.screenshot(path=str(OUT / f"{name}.png"))
+            page.set_viewport_size({"width": 1360, "height": 900})
 
         # --- overview (seeded first-run traffic)
         go("overview")

@@ -129,7 +129,9 @@ print("             after approve:", c.get(f"/api/runs/{e['id']}").json()["statu
 
 head("7 Sandbox attack suite (harness-judged)")
 pr = c.post("/api/sandbox/probe", json={}).json()
-print("profiles scored:", pr["profiles"], "not scored:", pr["unusable"])
+# a profile that is not available here (Docker stopped) is never probed: say so, not "not scored: {}"
+missing = {p["name"]: p["reason"] for p in c.get("/api/meta").json()["sandbox_profiles"] if not p["available"]}
+print("profiles scored:", pr["profiles"], "not scored:", {**missing, **pr["unusable"]})
 for a in pr["attacks"]:
     print(f"  {a['title']:<42}", {p: v["verdict"] for p, v in a["results"].items()})
 print("got through:", pr["got_through"], "of", pr["total"])

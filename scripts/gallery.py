@@ -3,7 +3,7 @@
     uv run --with playwright python scripts/gallery.py
 
 Starts its own server on a free port in 8800-8899 with a temp data dir, signs in with the
-admin-token it generated, drives every section in headless Chromium, and stops exactly the
+admin-token it generated, drives every section in headless Microsoft Edge, and stops exactly the
 process it started. Writes docs/gallery/NN-name.png (1440x900 viewport, full page, dark mode
 except the phone shot) and docs/gallery/outputs.json (the text each tool actually returned,
 which CAPTIONS.md quotes).
@@ -96,8 +96,7 @@ def drop_file(page, selector: str, path: Path) -> None:
 
 def run(base: str, token: str) -> None:
     with sync_playwright() as p:
-        found = sorted(Path.home().glob("AppData/Local/ms-playwright/chromium-*/chrome-win64/chrome.exe"))
-        b = p.chromium.launch(executable_path=str(found[-1])) if found else p.chromium.launch()
+        b = p.chromium.launch(channel="msedge")
         ctx = b.new_context(viewport={"width": 1440, "height": 900}, color_scheme="dark",
                             accept_downloads=True)
         page = ctx.new_page()
@@ -111,6 +110,7 @@ def run(base: str, token: str) -> None:
 
         def go(name: str) -> None:
             page.goto(f"{base}/#/{name}")
+            page.evaluate("route()")  # re-render even when already on that page: no stale result
             page.wait_for_selector("main .card, main .tiles", timeout=20000)
             page.wait_for_timeout(600)
 
@@ -140,6 +140,10 @@ def run(base: str, token: str) -> None:
             page.wait_for_timeout(1500)
             assert want in page.inner_text("#h-out").lower(), name
             shot(name, "#h-out")
+            if i in (1, 3):  # the README's Interaction section: a served result and a refusal
+                (ROOT / "docs" / "interaction").mkdir(exist_ok=True)
+                page.locator(".hero").screenshot(path=str(ROOT / "docs" / "interaction" / (
+                    "01-press-glow-and-result.png" if i == 1 else "02-blocked-injection.png")))
         page.click("[data-t='0']")  # repeat greeting -> cache hit
         page.wait_for_timeout(1800)
         seen["01b-greeting-repeat"] = page.inner_text("#h-out")
@@ -208,7 +212,8 @@ def run(base: str, token: str) -> None:
         shot("10-playground-tenant-term-blocked", "#p-out")
         page.fill("#p-prompt", "Draft a status note about the zephyr contract.")
         page.click("#p-send")
-        page.wait_for_selector("#p-out .answer", timeout=15000)
+        page.wait_for_selector("#p-out h2:has-text('Answer')", timeout=15000)
+        assert "redacted:custom_term" in page.inner_text("#p-out")
         seen["10b-term-redacted"] = page.inner_text("#p-out")
 
         # 11 Router
@@ -286,6 +291,9 @@ def run(base: str, token: str) -> None:
         if m.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") > 1:
             problems.append("phone layout scrolls sideways")
         m.screenshot(path=str(OUT / "20-overview-phone.png"), full_page=False)
+        m.screenshot(path=str(ROOT / "docs" / "interaction" / "03-phone.png"), full_page=False)
+        if m.evaluate("document.querySelector('nav').getBoundingClientRect().height") > 844 * 0.2:
+            problems.append("phone nav takes more than a fifth of the first screen")
         b.close()
 
 

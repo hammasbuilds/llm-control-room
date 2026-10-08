@@ -160,3 +160,12 @@ def test_dry_run_records_nothing(core):
         GatewayRequest(tenant="acme", dry_run=True, messages=[{"role": "user", "content": "hello"}])
     )
     assert out["route"]["primary"] and core.store.one("SELECT COUNT(*) AS n FROM calls")["n"] == 0
+
+
+def test_answer_after_redaction_reads_as_words(core):
+    """Owner review: the reply listed tokens ("card, credit, declined, email, redacted")."""
+    r = ask(core, "My email is jordan.lee@example.com and card 4111 1111 1111 1111 was declined, why?")
+    assert "redacted:email" in r["redactions"]
+    assert "(email removed)" in r["text"] and "(card number removed)" in r["text"]
+    assert "REDACTED" not in r["text"] and ", redacted" not in r["text"]
+    assert r["text"].startswith(("Mock reply from", "Low-confidence mock reply from"))

@@ -43,7 +43,7 @@ html, body { margin: 0; background: var(--bg); color: var(--ink);
 a { color: var(--accent); }
 h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 0 0 10px; }
 h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.layout { display: grid; grid-template-columns: 210px 1fr; min-height: 100vh; }
+.layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 100vh; }
 nav { background: var(--panel); border-right: 1px solid var(--line); padding: 14px 10px;
   position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; padding: 4px 8px 14px; font-size: 15px; }
@@ -53,7 +53,7 @@ nav a.item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; bo
 nav a.item:hover { background: var(--panel2); color: var(--ink); }
 nav a.item.active { background: var(--info-bg); color: var(--accent); }
 nav .foot { margin-top: 16px; padding: 8px; color: var(--muted); font-size: 12px; }
-main { padding: 20px 26px 60px; max-width: 1280px; width: 100%; }
+main { padding: 20px 26px 60px; max-width: 1280px; width: 100%; min-width: 0; }
 .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .sub { color: var(--muted); }
 .banner { background: var(--info-bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
@@ -93,11 +93,11 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 8px 0 3px;
 pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto;
   font: 12.5px/1.45 var(--mono); margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
 .answer { background: var(--panel2); border-left: 3px solid var(--accent); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; }
-.bars .b { display: grid; grid-template-columns: 110px 1fr 90px; gap: 8px; align-items: center; margin: 4px 0; }
+.bars .b { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 4px 0; }
 .bars .t { background: var(--panel2); border-radius: 5px; height: 14px; overflow: hidden; }
 .bars .t i { display: block; height: 100%; border-radius: 5px; }
 .bars .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bars .x { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.bars .x { white-space: nowrap; min-width: 70px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 svg text { fill: var(--muted); font-size: 11px; }
 svg .grid { stroke: var(--line); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 4px; }
@@ -106,7 +106,7 @@ svg .grid { stroke: var(--line); }
 .log { font-family: var(--mono); font-size: 12.5px; max-height: 420px; overflow-y: auto; background: var(--panel2);
   border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
 .log div { padding: 2px 0; border-bottom: 1px dashed var(--line); } .log div:last-child { border: 0; }
-.log .k { display: inline-block; min-width: 108px; font-weight: 600; }
+.log .k { display: inline-block; min-width: 108px; margin-right: 8px; font-weight: 600; }
 .log .k.step { color: var(--accent); } .log .k.tool_call { color: var(--good); } .log .k.tool_error, .log .k.error, .log .k.budget_stop { color: var(--bad); }
 .log .k.approval_required { color: var(--warn); } .log .k.finish { color: var(--ink); }
 .scen { cursor: pointer; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel); }
@@ -120,12 +120,12 @@ svg .grid { stroke: var(--line); }
 .empty { color: var(--muted); padding: 18px; text-align: center; }
 .menu-btn { display: none; }
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   nav { position: static; height: auto; display: flex; flex-wrap: wrap; gap: 2px; border-right: 0; border-bottom: 1px solid var(--line); }
   nav .brand { width: 100%; padding-bottom: 6px; } nav .foot { display: none; }
   main { padding: 14px 16px 50px; }
   .g2 { grid-template-columns: 1fr; }
-  .bars .b { grid-template-columns: 80px 1fr 70px; }
+  .bars .b { grid-template-columns: 80px minmax(0, 1fr) auto; }
 }
 
 /* ---- identity layer ---- */
@@ -193,7 +193,6 @@ nav .foot { font-family: var(--mono); }
 @keyframes sk { to { background-position: -200% 0; } }
 @media (max-width: 860px) { .hero-body { grid-template-columns: 1fr; } .hero-out { border-left: 0; border-top: 1px dashed var(--line); } .hero-head, .hero-in, .hero-out { padding-left: 14px; padding-right: 14px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
-.card { overflow-x: auto; }
 
 /* ---- motion layer ---- */
 :root { --dur-fast: 120ms; --dur-base: 200ms; --dur-slow: 320ms; --ease-std: cubic-bezier(.2, 0, 0, 1);
@@ -298,3 +297,42 @@ textarea.droppable { transition: border-color var(--dur-base), background-color 
 @media (max-width: 860px) { nav a.help { margin-left: 8px; } .step { grid-template-columns: 24px 1fr; } .dropzone { padding: 10px; } }
 
 .termfld { flex: 1 1 240px; min-width: 0; } .termfld > input { width: 100%; box-sizing: border-box; text-overflow: ellipsis; }
+
+/* ---- no clipped tables, readable event details, phone nav that leads with content ---- */
+/* the seven-column cost tables: two side by side only when each gets ~560 px, else one per row */
+.gt { grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); margin-top: 14px; }
+.scroll { overflow-x: auto; max-width: 100%; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--accent) 55%, transparent) var(--panel2);
+  /* scroll shadows: an accent edge appears on whichever side has more columns to scroll to */
+  background: linear-gradient(to right, var(--panel), var(--panel)) left / 24px 100% no-repeat local,
+    linear-gradient(to left, var(--panel), var(--panel)) right / 24px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--accent) 45%, transparent), transparent) left / 14px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--accent) 45%, transparent), transparent) right / 14px 100% no-repeat scroll; }
+.scroll::-webkit-scrollbar { height: 8px; } .scroll::-webkit-scrollbar-track { background: var(--panel2); border-radius: 4px; }
+.scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 4px; }
+th, td { padding: 6px 7px; }
+td.n { white-space: nowrap; }
+.dl { margin: 0; padding: 0; list-style: none; font: 12.5px/1.45 var(--mono); }
+.dl > div, .dl > li { display: flex; gap: 6px; flex-wrap: wrap; }
+.dl dt { color: var(--muted); } .dl dt::after { content: ":"; }
+.dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+ul.dl > li { display: block; padding-left: 10px; border-left: 2px solid var(--line); margin: 2px 0; }
+table.events td:last-child { width: 100%; }
+@media (max-width: 860px) {
+  .gt { grid-template-columns: 1fr; }
+  nav { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; padding: 6px 10px;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav .brand { width: auto; flex: none; padding: 0 4px 0 0; gap: 6px; }
+  nav .brand > span { display: none; }
+  nav a.help { margin-left: 0; }
+  nav a.item { flex: none; margin: 0; padding: 6px 10px; white-space: nowrap; font-size: 13px; }
+  nav a.item svg { display: none; }
+  nav .foot { display: block; flex: none; margin: 0; padding: 0 0 0 4px; }
+  nav .foot > div { display: none; }
+}
+a.btn { display: inline-block; text-decoration: none; }
+a.btn.primary { background: linear-gradient(135deg, var(--accent), var(--violet)); color: var(--btn-ink); border-color: transparent; font-weight: 600; }
+.span2 { grid-column: span 2; }
+@media (max-width: 1100px) { .span2 { grid-column: 1 / -1; } }
+.grid > * { min-width: 0; }
+@media (max-width: 860px) { .g2, .g3 { grid-template-columns: minmax(0, 1fr); } }

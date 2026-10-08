@@ -4,6 +4,9 @@
   const reduce = matchMedia("(prefers-reduced-motion: reduce)");
   const fine = matchMedia("(pointer: fine)");
   let last = null; // last button pressed, for success/error flashes
+  // the button whose click handler is running right now: it gets the busy spinner only if that
+  // handler disables it (work started). Cleared by a task, which runs after the observer's microtask.
+  let armed = null;
 
   document.addEventListener("pointerdown", (e) => {
     const b = e.target.closest && e.target.closest("button, .btn");
@@ -15,6 +18,12 @@
     i.className = "ripple"; i.setAttribute("aria-hidden", "true");
     i.style.cssText = `width:${s}px;height:${s}px;left:${e.clientX - r.left - s / 2}px;top:${e.clientY - r.top - s / 2}px`;
     b.appendChild(i); setTimeout(() => i.remove(), 650);
+  }, true);
+
+  // keyboard presses (Enter / Space) count as the last pressed button too
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("button, .btn");
+    if (b && !b.disabled) { last = b; armed = b; setTimeout(() => { if (armed === b) armed = null; }, 0); }
   }, true);
 
   document.addEventListener("pointermove", (e) => {
@@ -76,7 +85,7 @@
       const w = inp.parentElement, lab = inp.previousElementSibling;
       if (w.classList.contains("fl") || w.children.length !== 2 || !/^(text|number|search|)$/.test(inp.getAttribute("type") || "")) return;
       if (inp.hasAttribute("data-l") && !lab.textContent.trim()) return;
-      if (!lab.textContent.replace(/ /g, "").trim()) return;
+      if (!lab.textContent.replace(/\u00a0/g, "").trim()) return;
       w.classList.add("fl");
       const ph = inp.getAttribute("placeholder");
       if (ph) w.classList.add("up"); else inp.setAttribute("placeholder", " ");
@@ -112,9 +121,12 @@
     for (const m of muts) {
       if (m.type === "attributes") {
         const b = m.target; if (b.tagName !== "BUTTON") continue;
-        b.classList.toggle("busy", b.disabled);
+        // a spinner only on the button the user just pressed while its work runs; a button that is
+        // merely unavailable (Stop when nothing runs, Run before a file is loaded) gets none, and
+        // neither does one the app disables later because its work ended (Stop after stopping)
+        b.classList.toggle("busy", b.disabled && b === armed);
         if (b.id === "h-run") { const h = b.closest(".hero"); if (h) h.classList.toggle("scanning", b.disabled); }
-        if (b.disabled) b.dataset.wasBusy = "1";
+        if (b.disabled && b.classList.contains("busy")) b.dataset.wasBusy = "1";
         else if (b.dataset.wasBusy) {
           delete b.dataset.wasBusy;
           flash(b.id === "h-run" && document.querySelector("#h-out .chip.bad") ? "err" : "ok", b);

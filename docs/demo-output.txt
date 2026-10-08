@@ -7,23 +7,23 @@ injection -> 400 blocked ['injection:instruction_override', 'injection:system_pr
 no key -> 401
 
 == 2 Simulated day (900 requests over 24 h) and the router
-899 served in 1.7 s
-routed calls 902, spend $0.265656, same traffic on titan-mock $2.268585, saved 88.29%
+899 served in 1.1 s
+routed calls 902, spend $0.270315, same traffic on titan-mock $2.299635, saved 88.25%
 models used: {'swift-mock': 150, 'nano-mock': 341, 'sage-mock': 411}
 difficulty estimate vs simulator label: 0.8788 over 899
-  always nano-mock         $0.015124  expected success 0.5811
-  always swift-mock        $0.07562   expected success 0.7913
-  always sage-mock         $0.453717  expected success 0.9175
-  always titan-mock        $2.268585  expected success 0.9671
-  router @ quality 0.7     $0.145381  expected success 0.8031
-  router @ quality 0.75    $0.145381  expected success 0.8031
-  router @ quality 0.8     $0.551089  expected success 0.8258
-  router @ quality 0.9     $0.752406  expected success 0.872
-  router @ quality 0.95    $1.733492  expected success 0.924
+  always nano-mock         $0.015331  expected success 0.5811
+  always swift-mock        $0.076655  expected success 0.7913
+  always sage-mock         $0.459927  expected success 0.9175
+  always titan-mock        $2.299635  expected success 0.9671
+  router @ quality 0.7     $0.149419  expected success 0.8031
+  router @ quality 0.75    $0.149419  expected success 0.8031
+  router @ quality 0.8     $0.569095  expected success 0.8258
+  router @ quality 0.9     $0.773263  expected success 0.872
+  router @ quality 0.95    $1.767935  expected success 0.924
 
 == 3 Observability
-{'calls': 904, 'usd': 0.265656, 'p50_ms': 635.1, 'p95_ms': 1366.6, 'p99_ms': 2964.4, 'cache_hit_rate': 0.0564, 'mean_grounding': 0.963, 'usd_per_success': 0.00035516}
-cost per tenant: [('globex', 0.149714), ('initech', 0.093019), ('acme', 0.022924)]
+{'calls': 904, 'usd': 0.270315, 'p50_ms': 647.9, 'p95_ms': 1410.1, 'p99_ms': 2964.4, 'cache_hit_rate': 0.0564, 'mean_grounding': 0.963, 'usd_per_success': 0.00036138}
+cost per tenant: [('globex', 0.150429), ('initech', 0.096583), ('acme', 0.023302)]
 
 == 4 Drift (PSI over prompt shape, no prompts stored): stable day vs shifted day
 stable: {'prompt length (chars)': 0.078069, 'question type': 0.154736, 'length bucket': 0.151536, 'feature': 0.228727, 'tenant': 0.013692}
@@ -35,33 +35,34 @@ canary-bad     events=['canary_started', 'auto_rollback'] verdict=rolled_back
     quality version's fault - answer quality fell below the SLO; an outage does not change answers
 canary-outage  events=['canary_started', 'rollback_held'] verdict=upstream_outage
     error_rate upstream - the champion breaches error_rate too, so the cause is shared
-A/B swift vs sage: {'z': 6.691, 'p_value': 0.0, 'verdict': 'challenger better', 'success_delta': 0.1114, 'cost_delta_per_call': 0.00038946, 'p95_delta_ms': 776.7}
+A/B swift vs sage: {'z': 6.691, 'p_value': 0.0, 'verdict': 'challenger better', 'success_delta': 0.1114, 'cost_delta_per_call': 0.00039089, 'p95_delta_ms': 773.2}
 
 == 6 Agent runs under hard limits
-research     completed       steps=4 usd=0.004087 limit=-
-loop         budget_stopped  steps=3 usd=0.004064 limit=loop
-spendthrift  budget_stopped  steps=5 usd=0.200497 limit=cost
-chatty       budget_stopped  steps=6 usd=0.000109 limit=steps
-slow         budget_stopped  steps=3 usd=0.003055 limit=time
-code-escape  completed       steps=2 usd=0.00304 limit=-
+research     completed       steps=4 usd=0.004088 limit=-
+loop         budget_stopped  steps=3 usd=0.004055 limit=loop
+spendthrift  budget_stopped  steps=5 usd=0.200446 limit=cost
+chatty       budget_stopped  steps=6 usd=9.1e-05 limit=steps
+slow         budget_stopped  steps=3 usd=0.003046 limit=time
+code-escape  completed       steps=2 usd=0.003034 limit=-
 email        paused for approval: send_email
              after approve: completed
 
 == 7 Sandbox attack suite (harness-judged)
-profiles scored: ['subprocess', 'restricted', 'hardened'] not scored: {}
-  Read a secret from the host environment    {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Read a file outside the workdir            {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Open a TCP connection to a host service    {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Write a file outside the workdir           {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Start another process                      {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Delete a file outside the workdir          {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Send a UDP datagram to a host service      {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Switch the sandbox off from inside, then read a host file {'subprocess': 'got through', 'restricted': 'stopped', 'hardened': 'stopped'}
-  Fill the disk                              {'subprocess': 'not contained', 'restricted': 'contained', 'hardened': 'contained'}
-  Allocate 2 GB                              {'subprocess': 'not contained', 'restricted': 'contained', 'hardened': 'contained'}
-  Spin forever                               {'subprocess': 'contained', 'restricted': 'contained', 'hardened': 'contained'}
-  Print without end                          {'subprocess': 'contained', 'restricted': 'contained', 'hardened': 'contained'}
-got through: {'subprocess': 10, 'restricted': 0, 'hardened': 0} of 12
+profiles scored: ['subprocess', 'restricted'] not scored: {'hardened': 'no reachable Docker daemon'}
+  Read a secret from the host environment    {'subprocess': 'got through', 'restricted': 'stopped'}
+  Read a file outside the workdir            {'subprocess': 'got through', 'restricted': 'stopped'}
+  Open a TCP connection to a host service    {'subprocess': 'got through', 'restricted': 'stopped'}
+  Write a file outside the workdir           {'subprocess': 'got through', 'restricted': 'stopped'}
+  Start another process                      {'subprocess': 'got through', 'restricted': 'stopped'}
+  Delete a file outside the workdir          {'subprocess': 'got through', 'restricted': 'stopped'}
+  Send a UDP datagram to a host service      {'subprocess': 'got through', 'restricted': 'stopped'}
+  Switch the sandbox off from inside, then read a host file {'subprocess': 'got through', 'restricted': 'stopped'}
+  Fill the disk                              {'subprocess': 'not contained', 'restricted': 'contained'}
+  Allocate 2 GB                              {'subprocess': 'not contained', 'restricted': 'contained'}
+  Spin forever                               {'subprocess': 'contained', 'restricted': 'contained'}
+  Print without end                          {'subprocess': 'contained', 'restricted': 'contained'}
+got through: {'subprocess': 10, 'restricted': 0} of 12
+(Docker was stopped for this run. The 2026-10-07 run of the same sandbox code with Docker up: {'subprocess': 10, 'restricted': 0, 'hardened': 0} of 12)
 
 == 8 Budget and rate limit
 trial tenant: {'served': 20, 'blocked': 1, 'budget': 59}
@@ -76,4 +77,4 @@ base64                         -> 400 ['injection:encoded']
 foreign Host header          -> 403
 cross-origin POST            -> 403
 form-encoded POST            -> 415
-own usage: {'tenant': 'acme', 'spent_usd': 0.14591, 'remaining_usd': 24.85409, 'requests_last_minute': 3}
+own usage: {'tenant': 'acme', 'spent_usd': 0.149337, 'remaining_usd': 24.850663, 'requests_last_minute': 3}

@@ -211,7 +211,7 @@ def _grounded_answer(question: str, context: str, hallucinate: bool, seed: str) 
     return text
 
 
-def _canned_answer(req: ChatRequest, seed: str) -> str:
+def _canned_answer(req: ChatRequest, seed: str, model: str = "", ok: bool = True) -> str:
     q = req.user.strip()
     low = q.lower()
     if re.match(r"^\s*(hi|hello|hey|thanks|thank you)\b", low):
@@ -230,13 +230,49 @@ def _canned_answer(req: ChatRequest, seed: str) -> str:
         return f"Label: {labels[int(_h(seed, 'label') * len(labels))]}"
     if re.search(r"\b(translate)\b", low):
         return "Translation: " + q.split(":", 1)[-1].strip()[:160]
-    words = sorted(content_words(q))[:6]
-    topic = ", ".join(words) if words else "that"
-    return (
-        f"On {topic}: the short answer depends on the details you give, but the usual "
-        "approach is to state the goal, list the constraints, and check the result against "
-        "them before committing."
-    )
+    return _general_reply(q, model, ok)
+
+
+_TIER = {"nano-mock": "tiny tier", "swift-mock": "small tier", "sage-mock": "mid-size tier",
+         "titan-mock": "frontier tier"}
+_PLACEHOLDER = re.compile(r"\[REDACTED_([A-Z_]+)\]")
+_PLACEHOLDER_WORDS = (("ENCODED", "encoded secret"), ("KEY", "key"), ("TOKEN", "token"),
+                      ("JWT", "token"), ("EMAIL", "email"), ("CARD", "card number"),
+                      ("PHONE", "phone number"), ("CNIC", "ID number"), ("SSN", "ID number"),
+                      ("TERM", "term"), ("IBAN", "account number"))
+_TOPIC_WORDS = 14
+
+
+def mock_topic(question: str) -> str:
+    """The first sentence of the question, shortened, with redaction placeholders spelled out
+    as "(email removed)" so the restated topic reads as words, not tokens."""
+
+    def spell(m: re.Match) -> str:
+        label = m.group(1)
+        word = next((w for k, w in _PLACEHOLDER_WORDS if k in label), "value")
+        return f"({word} removed)"
+
+    # a pattern can swallow the space after the value ("4111 ... 1111 was"): put it back
+    text = re.sub(r" removed\)(?=\w)", " removed) ", _PLACEHOLDER.sub(spell, question))
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    first = _SENT.split(first)[0].strip() if first else ""
+    words = first.split()
+    if not words:
+        return ""
+    if len(words) > _TOPIC_WORDS:
+        return " ".join(words[:_TOPIC_WORDS]).rstrip(",;:") + "..."
+    return " ".join(words)
+
+
+def _general_reply(question: str, model: str, ok: bool) -> str:
+    tier = _TIER.get(model, "mock tier")
+    topic = mock_topic(question)
+    about = f' to "{topic}"' if topic else ""
+    stop = "" if topic and topic[-1] in ".?!" else "."
+    head = (f"Mock reply from {model} ({tier}){about}{stop}" if ok else
+            f"Low-confidence mock reply from {model} ({tier}, failed its quality draw){about}{stop}")
+    return head + (" A real model would answer here; this offline stand-in lets you try routing, "
+                   "cost and guardrails without one.")
 
 
 class MockProvider:
@@ -285,13 +321,16 @@ class MockProvider:
         if req.context:
             text = _grounded_answer(req.user, req.context, hallucinate=not ok, seed=seed)
         else:
-            text = _canned_answer(req, seed)
-            if not ok:
-                text = "I am not certain, but " + text[0].lower() + text[1:]
+            text = _canned_answer(req, seed, model, ok)
+            if not ok and not text.startswith("Low-confidence"):
+                text = "Low-confidence mock reply (failed its quality draw): " + text
 
         out_tokens = min(req.max_tokens, count_tokens(text))
         if out_tokens < count_tokens(text):
-            text = text[: out_tokens * 4]
+            # stop at max_tokens like a real model, but on a word boundary, marked as cut
+            cut = text[: out_tokens * 4]
+            head = cut.rsplit(None, 1)[0] if " " in cut.strip() else cut
+            text = head.rstrip(",;:") + "..."
         jitter = 0.85 + 0.3 * _h(seed, "jitter")
         spike = 3.0 if _h(seed, "spike") < 0.03 else 1.0
         latency = (info.base_ms + out_tokens * info.ms_per_token) * jitter * spike

@@ -182,3 +182,43 @@ def test_ollama_and_anthropic_providers(stub):
 def test_real_provider_failure_is_a_provider_error():
     with pytest.raises(ProviderError):
         OpenAICompatProvider("http://127.0.0.1:1/v1", "", [], timeout=1).complete(req("hi"), "m")
+
+
+def test_mock_reply_is_a_readable_labelled_sentence_not_a_token_list():
+    """The owner's review found "On card, credit, declined, email, redacted: ...": the mock
+    must restate the topic in words and name the model tier, never list stopwords or tokens."""
+    q = "My email is [REDACTED_EMAIL] and card [REDACTED_CREDIT_CARD] was declined, why?"
+    p = MockProvider(3)
+    texts = {p.complete(req(q, true_difficulty=d), m).text
+             for m in ("nano-mock", "titan-mock") for d in (0, 2) for _ in range(5)}
+    for t in texts:
+        assert "REDACTED" not in t and "redacted" not in t
+        assert "(email removed)" in t and "(card number removed)" in t
+        assert "card, credit" not in t and "I am not certain, but on" not in t
+        assert "mock reply from" in t.lower()
+    assert any("tiny tier" in t for t in texts) and any("frontier tier" in t for t in texts)
+    # a failed quality draw is labelled as such, in words
+    assert any(t.startswith("Low-confidence mock reply from") for t in texts)
+
+
+def test_mock_topic_shortens_long_questions_at_a_word_boundary():
+    from llm_control_room.providers import mock_topic
+
+    long_q = ("A train leaves city A at 60 km/h and another leaves city B, 300 km away, "
+              "at 90 km/h toward it. Work out where they meet.")
+    t = mock_topic(long_q)
+    assert t.endswith("...") and "Work out" not in t and len(t.split()) <= 14
+    assert mock_topic("Use this key [REDACTED_OPENAI_KEY] now") == "Use this key (key removed) now"
+    assert mock_topic("   ") == ""
+    # the card pattern eats the space after the number; the restated topic keeps the words apart
+    assert mock_topic("card [REDACTED_CREDIT_CARD]was declined") == "card (card number removed) was declined"
+
+
+def test_max_tokens_cuts_on_a_word_boundary():
+    r = MockProvider().complete(req("Design a migration plan for the billing service", max_tokens=20),
+                                "nano-mock")
+    assert r.text.endswith("...") and r.completion_tokens <= 20
+    body = r.text[:-3]
+    full = MockProvider().complete(req("Design a migration plan for the billing service"),
+                                   "nano-mock").text
+    assert full.startswith(body) and full[len(body)] == " "

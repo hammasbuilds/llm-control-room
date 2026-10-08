@@ -56,8 +56,7 @@ def drop_file(page, selector: str, path: Path) -> None:
 
 def main() -> None:
     with sync_playwright() as p:
-        found = sorted(Path.home().glob("AppData/Local/ms-playwright/chromium-*/chrome-win64/chrome.exe"))
-        b = p.chromium.launch(executable_path=str(found[-1])) if found else p.chromium.launch()
+        b = p.chromium.launch(channel="msedge")
         ctx = b.new_context(viewport={"width": 1360, "height": 900}, color_scheme="light", accept_downloads=True)
         page = ctx.new_page()
         page.on("console", lambda m: problems.append(f"console {m.type}: {m.text}") if m.type == "error" and "status of 400" not in m.text else None)
