@@ -7,26 +7,26 @@ injection -> 400 blocked ['injection:instruction_override', 'injection:system_pr
 no key -> 401
 
 == 2 Simulated day (900 requests over 24 h) and the router
-899 served in 1.1 s
-routed calls 902, spend $0.270315, same traffic on titan-mock $2.299635, saved 88.25%
-models used: {'swift-mock': 150, 'nano-mock': 341, 'sage-mock': 411}
-difficulty estimate vs simulator label: 0.8788 over 899
-  always nano-mock         $0.015331  expected success 0.5811
-  always swift-mock        $0.076655  expected success 0.7913
-  always sage-mock         $0.459927  expected success 0.9175
-  always titan-mock        $2.299635  expected success 0.9671
-  router @ quality 0.7     $0.149419  expected success 0.8031
-  router @ quality 0.75    $0.149419  expected success 0.8031
-  router @ quality 0.8     $0.569095  expected success 0.8258
-  router @ quality 0.9     $0.773263  expected success 0.872
-  router @ quality 0.95    $1.767935  expected success 0.924
+899 served in 2.3 s
+routed calls 851, spend $0.270315, same traffic on titan-mock $2.181345, saved 87.61%
+models used: {'swift-mock': 149, 'nano-mock': 311, 'sage-mock': 391}
+difficulty estimate vs simulator label: 0.8751 over 849
+  always nano-mock         $0.014542  expected success 0.5726
+  always swift-mock        $0.072711  expected success 0.7864
+  always sage-mock         $0.436269  expected success 0.9156
+  always titan-mock        $2.181345  expected success 0.9665
+  router @ quality 0.7     $0.14512   expected success 0.7993
+  router @ quality 0.75    $0.14512   expected success 0.7993
+  router @ quality 0.8     $0.556072  expected success 0.8227
+  router @ quality 0.9     $0.751475  expected success 0.8697
+  router @ quality 0.95    $1.702613  expected success 0.9222
 
 == 3 Observability
-{'calls': 904, 'usd': 0.270315, 'p50_ms': 647.9, 'p95_ms': 1410.1, 'p99_ms': 2964.4, 'cache_hit_rate': 0.0564, 'mean_grounding': 0.963, 'usd_per_success': 0.00036138}
+{'calls': 904, 'usd': 0.270315, 'p50_ms': 647.9, 'p95_ms': 1415.8, 'p99_ms': 2964.4, 'cache_hit_rate': 0.0564, 'mean_grounding': 0.963, 'usd_per_success': 0.00036138}
 cost per tenant: [('globex', 0.150429), ('initech', 0.096583), ('acme', 0.023302)]
 
 == 4 Drift (PSI over prompt shape, no prompts stored): stable day vs shifted day
-stable: {'prompt length (chars)': 0.078069, 'question type': 0.154736, 'length bucket': 0.151536, 'feature': 0.228727, 'tenant': 0.013692}
+stable: {'prompt length (chars)': 0.079897, 'question type': 0.075717, 'length bucket': 0.072508, 'feature': 0.183971, 'tenant': 0.013109}
 shifted: {'prompt length (chars)': 0.48145, 'question type': 0.288233, 'length bucket': 1.273501, 'feature': 1.863623, 'tenant': 0.017} -> feature
 
 == 5 Releases: canary verdicts
@@ -35,12 +35,12 @@ canary-bad     events=['canary_started', 'auto_rollback'] verdict=rolled_back
     quality version's fault - answer quality fell below the SLO; an outage does not change answers
 canary-outage  events=['canary_started', 'rollback_held'] verdict=upstream_outage
     error_rate upstream - the champion breaches error_rate too, so the cause is shared
-A/B swift vs sage: {'z': 6.691, 'p_value': 0.0, 'verdict': 'challenger better', 'success_delta': 0.1114, 'cost_delta_per_call': 0.00039089, 'p95_delta_ms': 773.2}
+A/B swift vs sage: {'z': 6.691, 'p_value': 0.0, 'verdict': 'challenger better', 'success_delta': 0.1114, 'cost_delta_per_call': 0.00039089, 'p95_delta_ms': 780.5}
 
 == 6 Agent runs under hard limits
-research     completed       steps=4 usd=0.004088 limit=-
+research     completed       steps=4 usd=0.004215 limit=-
 loop         budget_stopped  steps=3 usd=0.004055 limit=loop
-spendthrift  budget_stopped  steps=5 usd=0.200446 limit=cost
+spendthrift  budget_stopped  steps=5 usd=0.160446 limit=cost
 chatty       budget_stopped  steps=6 usd=9.1e-05 limit=steps
 slow         budget_stopped  steps=3 usd=0.003046 limit=time
 code-escape  completed       steps=2 usd=0.003034 limit=-

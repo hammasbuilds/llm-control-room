@@ -106,6 +106,41 @@ def group_by(rows: list[dict], key: str) -> list[dict]:
     return sorted(out, key=lambda x: -x["usd"])
 
 
+def add_shadow_spend(
+    groups: list[dict], shadow_rows: list[dict], key: str, add_missing: bool = False
+) -> list[dict]:
+    """Shadow calls are never served, so they stay out of latency, success and per-call figures,
+    but they are money the tenant's requests caused (the budget counts them). Each group gets
+    ``shadow_usd`` and ``total_usd``; with ``add_missing`` a key seen only in shadow traffic (a
+    model that only shadows) gets a row of its own, marked ``shadow_only``."""
+    spend: dict[str, float] = defaultdict(float)
+    rows_by: dict[str, list[dict]] = defaultdict(list)
+    for r in shadow_rows:
+        k = str(r[key] or "-")
+        spend[k] += r["usd"]
+        rows_by[k].append(r)
+    have = set()
+    for g in groups:
+        k = str(g[key])
+        have.add(k)
+        g["shadow_usd"] = round(spend.get(k, 0.0), 6)
+        g["total_usd"] = round(g.get("usd", 0.0) + g["shadow_usd"], 6)
+    if add_missing:
+        for k in sorted(set(rows_by) - have):
+            s = summarise(rows_by[k])
+            groups.append(
+                {
+                    key: k,
+                    **s,
+                    "usd": 0.0,
+                    "shadow_usd": s["usd"],
+                    "total_usd": s["usd"],
+                    "shadow_only": True,
+                }
+            )
+    return sorted(groups, key=lambda x: -x["total_usd"])
+
+
 def timeseries(rows: list[dict], buckets: int = 24) -> list[dict]:
     if not rows:
         return []
@@ -139,7 +174,10 @@ def _hist(values: list[float], edges: list[float]) -> list[float]:
 
 def drift(rows: list[dict], current_fraction: float = 0.25) -> dict:
     """Reference = the earlier part of the window, current = the last ``current_fraction`` of it
-    by time. PSI per dimension, from prompt length, question type, length bucket and feature."""
+    by time. PSI per dimension, from prompt length, question type, length bucket and feature.
+    Rows without a prompt shape (a request blocked before its prompt was read) are left out: an
+    unknown shape is not a zero-length prompt of type "other"."""
+    rows = [r for r in rows if r["signature"]]
     if len(rows) < 40:
         return {"ready": False, "reason": "need at least 40 calls", "dimensions": []}
     t0, t1 = rows[0]["at"], rows[-1]["at"]
@@ -270,9 +308,14 @@ class Alerts:
 
 
 def routing_report(rows: list[dict]) -> dict:
-    served = [r for r in _served(rows) if r["provider"]]
+    """Over the requests the router sent to a model. A cache hit reached no model: the cache
+    saved that money, not the route, and the "always the baseline model" plan would have had the
+    same hit, so counting it at the baseline's price would credit the router with the cache's
+    savings. Cache hits are counted separately."""
+    routed = [r for r in _served(rows) if r["provider"]]
+    served = [r for r in routed if not r["cached"]]
     if not served:
-        return {"calls": 0}
+        return {"calls": 0, "cache_hits": len(routed)}
     by_model = Counter(r["model"] for r in served)
     diff = Counter(LEVELS[r["diff_est"]] for r in served)
     spent = sum(r["usd"] for r in served)
@@ -286,6 +329,7 @@ def routing_report(rows: list[dict]) -> dict:
     pinned = sum(1 for r in served if r["route_reason"] == "pinned by caller")
     return {
         "calls": len(served),
+        "cache_hits": len(routed) - len(served),
         "by_model": dict(by_model),
         "by_difficulty": dict(diff),
         "usd": round(spent, 6),
@@ -307,7 +351,8 @@ def frontier(rows: list[dict], models: list[ModelInfo], baseline: str = "") -> d
     """What-if over recorded traffic: cost and expected success for 'always model X' and for the
     router at several quality thresholds. Uses recorded token counts and estimated difficulty
     (or the true label where the simulator supplied one), so nothing is re-run."""
-    served = [r for r in _served(rows) if r["provider"] and r["model"]]
+    # cache hits cost nothing under every strategy, so they are left out of every point
+    served = [r for r in _served(rows) if r["provider"] and r["model"] and not r["cached"]]
     if len(served) < 10:
         return {"ready": False, "points": []}
     mock = [m for m in models if m.mock] or models
@@ -350,6 +395,7 @@ def frontier(rows: list[dict], models: list[ModelInfo], baseline: str = "") -> d
         "ready": True,
         "n": len(served),
         "points": pts,
-        "note": "Mock models only; token counts as recorded; success = the mock's quality "
-        "table at the true difficulty where known, else the estimate.",
+        "note": "Mock models only; calls that reached a model (cache hits excluded); token "
+        "counts as recorded; success = the mock's quality table at the true difficulty where "
+        "known, else the estimate.",
     }

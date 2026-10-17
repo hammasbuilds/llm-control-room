@@ -30,11 +30,11 @@ Recreate every shot with `uv run --with playwright python scripts/gallery.py`. T
 
 ## Router
 
-**11-router-decisions-and-savings.png** Router after 900 simulated requests. Output: $0.272 spent against $2.315 on titan-mock (88.3% saved), the difficulty confusion matrix (87.9% agreement with the simulator's labels), and the cost-against-success frontier for always-one-model and router thresholds.
+**11-router-decisions-and-savings.png** Router after 900 simulated requests. Output: $0.272 spent on the 856 calls sent to a model against $2.195 for the same calls on titan-mock (87.6% saved; the 55 cache hits are not credited to the router), the difficulty confusion matrix (87.5% agreement with the simulator's labels), and the cost-against-success frontier for always-one-model and router thresholds.
 
 ## Observability
 
-**12-observability-cost-latency-drift.png** Observability after the drift scenario. Output: cost per tenant, feature and model, latency percentiles excluding cache hits, a fired p95 latency alert, and prompt drift by PSI where feature (1.321) and length bucket (0.449) read as significant shifts; the feature labels under the largest-shift chart are slanted so none overlap.
+**12-observability-cost-latency-drift.png** Observability after the drift scenario. Output: cost per tenant, feature and model, latency percentiles excluding cache hits, a fired p95 latency alert, and prompt drift by PSI where feature (1.254) and length bucket (0.356) read as significant shifts; the feature labels under the largest-shift chart are slanted so none overlap.
 
 ## Releases
 
@@ -46,7 +46,7 @@ Recreate every shot with `uv run --with playwright python scripts/gallery.py`. T
 
 **15-agent-approval-gate.png** Agent runs, Send an email scenario. Input: "Tell the customer in note customer-123 that the refund is approved." Output: the run pauses at send_email (EXTERNAL) showing the exact arguments, with Approve and Deny; nothing is sent until approved.
 
-**16-agent-limits-hit.png** Agent runs after approving the email (completed), then the Stuck in a loop and Runaway cost scenarios. Output: the loop run stops on loop budget at 3 identical actions, the cost run stops at LIMIT HIT: cost, $0.2004 of $0.20, after 5 steps.
+**16-agent-limits-hit.png** Agent runs after approving the email (completed), then the Stuck in a loop and Runaway cost scenarios. Output: the loop run stops on loop budget at 3 identical actions, the cost run stops at LIMIT HIT: cost after 5 steps at $0.1604 of $0.20, before the paid search that would have crossed the limit.
 
 ## Sandbox
 

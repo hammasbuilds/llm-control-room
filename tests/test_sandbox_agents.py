@@ -156,7 +156,8 @@ def test_loop_is_detected(core):
 def test_cost_limit(core):
     r, _ = run(core, "spendthrift")
     assert r["status"] == "budget_stopped" and r["result"]["limit"] == "cost"
-    assert r["result"]["usd"] >= 0.2
+    # stopped before the paid search that would cross $0.20, so the limit is never exceeded
+    assert 0.2 - 0.04 - 0.002 < r["result"]["usd"] <= 0.2
 
 
 def test_step_limit(core):

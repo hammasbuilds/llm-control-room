@@ -73,13 +73,13 @@ Playground as billing-team with the prompt "Draft a status note about project or
 
 ![11-router-decisions-and-savings](docs/gallery/11-router-decisions-and-savings.png)
 
-Router after 900 simulated requests. Output: $0.272 spent against $2.315 on titan-mock (88.3% saved), the difficulty confusion matrix (87.9% agreement with the simulator's labels), and the cost-against-success frontier for always-one-model and router thresholds.
+Router after 900 simulated requests. Output: $0.272 spent on the 856 calls sent to a model against $2.195 for the same calls on titan-mock (87.6% saved; the 55 cache hits are not credited to the router), the difficulty confusion matrix (87.5% agreement with the simulator's labels), and the cost-against-success frontier for always-one-model and router thresholds.
 
 ### Observability
 
 ![12-observability-cost-latency-drift](docs/gallery/12-observability-cost-latency-drift.png)
 
-Observability after the drift scenario. Output: cost per tenant, feature and model, latency percentiles excluding cache hits, a fired p95 latency alert, and prompt drift by PSI where feature (1.321) and length bucket (0.449) read as significant shifts; the feature labels under the largest-shift chart are slanted so none overlap.
+Observability after the drift scenario. Output: cost per tenant, feature and model, latency percentiles excluding cache hits, a fired p95 latency alert, and prompt drift by PSI where feature (1.254) and length bucket (0.356) read as significant shifts; the feature labels under the largest-shift chart are slanted so none overlap.
 
 ### Releases
 
@@ -99,7 +99,7 @@ Agent runs, Send an email scenario. Input: "Tell the customer in note customer-1
 
 ![16-agent-limits-hit](docs/gallery/16-agent-limits-hit.png)
 
-Agent runs after approving the email (completed), then the Stuck in a loop and Runaway cost scenarios. Output: the loop run stops on loop budget at 3 identical actions, the cost run stops at LIMIT HIT: cost, $0.2004 of $0.20, after 5 steps.
+Agent runs after approving the email (completed), then the Stuck in a loop and Runaway cost scenarios. Output: the loop run stops on loop budget at 3 identical actions, the cost run stops at LIMIT HIT: cost after 5 steps at $0.1604 of $0.20, before the paid search that would have crossed the limit.
 
 ### Sandbox
 
@@ -127,8 +127,8 @@ Home page at 390 px width (light mode): navigation is one compact row that scrol
 | | |
 |---|---|
 | **Gateway** | `POST /v1/chat/completions` (plus `/v1/models`, streaming replay). Per-tenant API keys (stored as SHA-256), spend budget over a rolling window, requests-per-minute limit, allowed-model list, response cache, fallback chain, secret redaction always (Unicode-normalised, one level of base64/percent/hex decoding), PII redaction per tenant, per-tenant literal block/redact terms, prompt-injection block, `GET /v1/usage` for a tenant's own spend. Order: guard, rate limit, route, budget, cache, call, output guard, record. |
-| **Router** | Difficulty from cheap, explainable signals (length, code, reasoning words, multi-part asks, retrieved context, easy cues). Picks the lowest expected cost among models whose quality for that difficulty reaches the tenant's threshold. Shows each decision, savings against a baseline model, an estimate-vs-label confusion matrix and a cost/success frontier. |
-| **Observability** | Cost per tenant, feature, model and per successful answer; p50/p95/p99 latency excluding cache hits; grounding rate for RAG calls; prompt drift by PSI over prompt shape (length, question type); alerts with a minimum sample and a cooldown. |
+| **Router** | Difficulty from cheap, explainable signals (length, code, reasoning words, multi-part asks, retrieved context, easy cues). Picks the lowest expected cost among models whose quality for that difficulty reaches the tenant's threshold. Shows each decision, savings against a baseline model over the calls that reached a model (cache hits are not credited to the router), an estimate-vs-label confusion matrix and a cost/success frontier. |
+| **Observability** | Cost per tenant, feature, model and per successful answer (spend includes the shadow calls a tenant's requests caused, as its budget does); p50/p95/p99 latency excluding cache hits; grounding rate for RAG calls; prompt drift by PSI over prompt shape (length, question type); alerts with a minimum sample and a cooldown. |
 | **Releases** | Versions of a model and system prompt, called like a model name. Sticky hash assignment, canary, A/B (two-proportion z-test), shadow traffic whose failures cannot reach the caller, per-version SLO windows, auto-rollback. |
 | **Agent runs** | Hard limits on steps, tool calls, cost, wall time and repeated actions; risk-tiered tools with an approval gate; a live run log; every reasoning step is a billed gateway call. |
 | **Sandbox** | Run Python under `subprocess` (unsafe baseline), `restricted` (scrubbed env, audit hook, timeout, output cap, 1 GB memory cap, 64 MB workdir cap) or `hardened` (Docker, when available), and a twelve-attack suite judged by the harness's own evidence. |

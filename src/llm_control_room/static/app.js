@@ -229,7 +229,7 @@ routes.overview = async (el) => {
   el.innerHTML = heroHtml() + header("Overview", "The last 24 hours across every tenant", simBanner()) +
     (s.calls ? tiles([
       { k: "Calls", v: num(s.calls), d: `${num(s.served)} served, ${num(s.blocked)} blocked` },
-      { k: "Spend", v: usd(s.usd, 2), d: `${usd(s.usd_per_call)} per call` },
+      { k: "Spend", v: usd(s.total_usd ?? s.usd, 2), d: s.shadow_usd ? `incl. ${usd(s.shadow_usd, 2)} on shadow calls` : `${usd(s.usd_per_call)} per call` },
       { k: "Saved by routing", v: usd(r.report.saved_usd, 2), d: `${(r.report.saved_pct || 0).toFixed(1)}% vs always ${esc(r.baseline_model)}` },
       { k: "p95 latency", v: ms(s.p95_ms), d: "cache hits excluded" },
       { k: "Cache hit rate", v: pct(s.cache_hit_rate) },
@@ -240,7 +240,7 @@ routes.overview = async (el) => {
     (s.calls ? `<div class="grid g2">
       <div class="card"><h2>Calls over time</h2>${lineChart([{ name: "calls", values: o.series.map((p) => p.calls || 0), color: "var(--c1)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => Math.round(v) })}</div>
       <div class="card"><h2>p95 latency (uncached)</h2>${lineChart([{ name: "p95", values: o.series.map((p) => p.p95_ms || 0), color: "var(--c3)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: ms })}</div>
-      <div class="card"><h2>Spend by tenant</h2>${bars(o.by_tenant.map((t) => ({ label: t.tenant, value: t.usd, sub: `${usd(t.usd_per_success)}/ok` })), (v) => usd(v, 3))}</div>
+      <div class="card"><h2>Spend by tenant</h2>${bars(o.by_tenant.map((t) => ({ label: t.tenant, value: t.total_usd ?? t.usd, sub: `${usd(t.usd_per_success)}/ok` })), (v) => usd(v, 3))}</div>
       <div class="card"><h2>Routing: model share</h2>${bars(Object.entries(r.report.by_model || {}).map(([m, c]) => ({ label: m, value: c, color: modelColor(m) })), num)}</div>
       <div class="card"><h2>Releases</h2>${rel.length ? `<table><tr><th>Release</th><th>Champion</th><th>Challenger</th><th>State</th></tr>${rel.map((x) => `<tr><td><a href="#/releases?r=${esc(x.name)}">${esc(x.name)}</a></td><td>v${x.champion}</td><td>${x.challenger ? "v" + x.challenger + " (" + Math.round(x.versions.find((v) => v.version === x.challenger).traffic * 100) + "%)" : "-"}</td><td>${x.last_verdict ? chip(x.last_verdict.replace(/_/g, " "), x.last_verdict === "ok" ? "good" : "warn") : `<span class="sub">-</span>`}</td></tr>`).join("")}</table>` : `<div class="empty">No releases yet. Run the canary scenarios in the Simulator.</div>`}</div>
       <div class="card"><h2>Recent alerts</h2>${o.alerts.length ? `<table>${o.alerts.slice(0, 6).map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}</td></tr>`).join("")}</table>` : `<div class="empty">No alerts</div>`}</div>
@@ -300,7 +300,7 @@ function renderResult(r, dry) {
 routes.routing = async (el) => {
   const d = await api("/api/routing?hours=24"), r = d.report, f = d.frontier;
   el.innerHTML = header("Router", "Each request goes to the cheapest model that is enough for its difficulty", simBanner()) + (!r.calls ? `<div class="card empty">No routed traffic yet. <a href="#/playground">Run a file of prompts</a> (drop a .jsonl or .csv, or paste) or fill this page from the <a href="#/simulator">Simulator</a>.</div>` : `
-  ${tiles([{ k: "Spend", v: usd(r.usd, 3) }, { k: `Same traffic on ${esc(d.baseline_model)}`, v: usd(r.baseline_usd, 3) }, { k: "Saved", v: usd(r.saved_usd, 3), d: r.saved_pct.toFixed(1) + "%" },
+  ${tiles([{ k: "Spend", v: usd(r.usd, 3), d: `${num(r.calls)} calls sent to a model${r.cache_hits ? `; ${num(r.cache_hits)} cache hits not counted` : ""}` }, { k: `Same traffic on ${esc(d.baseline_model)}`, v: usd(r.baseline_usd, 3) }, { k: "Saved", v: usd(r.saved_usd, 3), d: r.saved_pct.toFixed(1) + "%" },
     { k: "Difficulty estimate vs label", v: r.confusion.accuracy == null ? "-" : pct(r.confusion.accuracy), d: `${num(r.confusion.labelled)} labelled calls` }, { k: "Pinned by caller", v: num(r.pinned) }])}
   <div class="grid g2">
     <div class="card"><h2>Where requests went</h2>${bars(Object.entries(r.by_model).sort((a, b) => b[1] - a[1]).map(([m, c]) => ({ label: m, value: c, color: modelColor(m) })), num)}
@@ -328,7 +328,7 @@ routes.observability = async (el) => {
   <div><label>Feature</label><select id="f-f"><option value="">all</option>${features.map((f) => `<option ${f === feature ? "selected" : ""}>${esc(f)}</option>`).join("")}</select></div>
   <button id="f-go" class="primary">Apply</button><button id="f-alerts">Evaluate alerts now</button><button id="f-csv" title="Per-call cost and latency, no prompt text">Export CSV</button></div></div>
   ${s.calls ? tiles([
-    { k: "Calls", v: num(s.calls) }, { k: "Spend", v: usd(s.usd, 3), d: `${usd(s.usd_per_success)} per successful answer` },
+    { k: "Calls", v: num(s.calls) }, { k: "Spend", v: usd(s.total_usd ?? s.usd, 3), d: s.shadow_usd ? `incl. ${usd(s.shadow_usd, 3)} on shadow calls; ${usd(s.usd_per_success)} per served success` : `${usd(s.usd_per_success)} per successful answer` },
     { k: "p50 / p95 / p99", v: `${ms(s.p50_ms)}`, d: `${ms(s.p95_ms)} / ${ms(s.p99_ms)} (cache hits excluded)` },
     { k: "Success rate", v: pct(s.success_rate), d: "mock quality draw, where known" },
     { k: "Grounding", v: s.mean_grounding == null ? "-" : pct(s.mean_grounding), d: s.ungrounded_rate == null ? "" : `${pct(s.ungrounded_rate)} ungrounded` },
@@ -339,7 +339,7 @@ routes.observability = async (el) => {
     <div class="card"><h2>Latency percentiles (uncached)</h2>${lineChart([{ name: "p50", values: o.series.map((p) => p.p50_ms || 0), color: "var(--c1)" }, { name: "p95", values: o.series.map((p) => p.p95_ms || 0), color: "var(--c3)" }, { name: "p99", values: o.series.map((p) => p.p99_ms || 0), color: "var(--c4)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: ms })}</div>
     <div class="card"><h2>Fallback and error rate</h2>${lineChart([{ name: "fallback", values: o.series.map((p) => p.fallback_rate || 0), color: "var(--c3)" }, { name: "error", values: o.series.map((p) => p.error_rate || 0), color: "var(--bad)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => pct(v, 0) })}</div>
   </div><div class="grid gt">
-    ${["tenant", "feature", "model"].map((k) => `<div class="card"><h2>Cost per ${k}</h2><div class="scroll"><table><tr><th>${k}</th><th class="n">Calls</th><th class="n">Spend</th><th class="n">$/call</th><th class="n">$/success</th><th class="n">p95</th><th class="n">Success</th></tr>${o["by_" + k].map((g) => `<tr><td>${esc(g[k])}</td><td class="n">${num(g.calls)}</td><td class="n">${usd(g.usd, 4)}</td><td class="n">${usd(g.usd_per_call, 5)}</td><td class="n">${usd(g.usd_per_success, 5)}</td><td class="n">${ms(g.p95_ms)}</td><td class="n">${pct(g.success_rate)}</td></tr>`).join("")}</table></div></div>`).join("")}
+    ${["tenant", "feature", "model"].map((k) => `<div class="card"><h2>Cost per ${k}</h2><div class="scroll"><table><tr><th>${k}</th><th class="n">Calls</th><th class="n">Spend</th><th class="n">$/call</th><th class="n">$/success</th><th class="n">p95</th><th class="n">Success</th></tr>${o["by_" + k].map((g) => `<tr><td>${esc(g[k])}${g.shadow_only ? " " + chip("shadow only", "warn") : ""}</td><td class="n">${num(g.calls)}</td><td class="n">${usd(g.total_usd ?? g.usd, 4)}${g.shadow_usd && !g.shadow_only ? `<div class="sub">incl. ${usd(g.shadow_usd, 4)} shadow</div>` : ""}</td><td class="n">${usd(g.usd_per_call, 5)}</td><td class="n">${usd(g.usd_per_success, 5)}</td><td class="n">${ms(g.p95_ms)}</td><td class="n">${pct(g.success_rate)}</td></tr>`).join("")}</table></div></div>`).join("")}
   </div><div class="grid g2" style="margin-top:14px">
     <div class="card"><h2>Prompt drift (PSI)</h2>${driftPanel(o.drift)}</div>
     <div class="card"><h2>Alerts</h2>${o.alerts.length ? `<table>${o.alerts.map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}<div class="sub">${when(a.at)}</div></td></tr>`).join("")}</table>` : `<div class="empty">No alerts. Rules need 30+ calls in the window and respect a cooldown.</div>`}</div>
@@ -453,7 +453,7 @@ routes.agents = async (el) => {
       else if (e.kind === "tool_error") txt = `${x.tool}: ${x.error}`;
       else if (e.kind === "approval_required") txt = `${x.tool} is ${x.tier}: waiting for a human. args ${clip(JSON.stringify(x.args), 200)}`;
       else if (e.kind === "approval") txt = `${x.decision}: ${x.tool}`;
-      else if (e.kind === "budget_stop") txt = `LIMIT HIT: ${x.limit} (max ${x.max}, used ${Number(x.used).toFixed(3)})${x.action ? " before " + x.action : ""}`;
+      else if (e.kind === "budget_stop") txt = `LIMIT HIT: ${x.limit} (max ${x.max}, used ${Number(x.used).toFixed(3)})${x.action ? " before " + x.action : ""}${x.next ? ", stopped before " + x.next + " (up to " + usd(x.next_usd, 4) + ")" : ""}`;
       else if (e.kind === "answer") txt = `${x.model} grounding ${x.grounding == null ? "-" : pct(x.grounding)}: ${x.text}`;
       else if (e.kind === "finish") txt = `${x.status}${x.reason ? " - " + x.reason : ""}${x.answer ? " | answer: " + x.answer : ""} | ${x.steps} steps, ${usd(x.usd, 5)}, ${x.seconds}s`;
       else txt = JSON.stringify(x);

@@ -421,15 +421,19 @@ def _run_code(code: str, profile: str, wall_seconds: float, output_bytes: int) -
                 release_job = None
         bufs = {"out": bytearray(), "err": bytearray()}
         flag = {"truncated": False}
+        cap_lock = threading.Lock()  # stdout and stderr share one cap
 
         def pump(stream, key):
             while True:
                 chunk = stream.read1(8192) if hasattr(stream, "read1") else stream.read(8192)
                 if not chunk:
                     return
-                if len(bufs["out"]) + len(bufs["err"]) < output_bytes:
-                    bufs[key].extend(chunk)
-                if len(bufs["out"]) + len(bufs["err"]) >= output_bytes:
+                with cap_lock:
+                    room = output_bytes - len(bufs["out"]) - len(bufs["err"])
+                    # keep exactly up to the cap; only output beyond it is "truncated"
+                    bufs[key].extend(chunk[: max(0, room)])
+                    over = len(chunk) > room
+                if over:
                     flag["truncated"] = True
                     _kill_tree(proc)
                     return

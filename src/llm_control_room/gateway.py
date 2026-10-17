@@ -281,6 +281,9 @@ class Gateway:
         redactions = sorted(set(redactions))
         user_text = next(m["content"] for m in reversed(guarded) if m["role"] == "user")
         route_text = "\n".join(m["content"] for m in guarded if m["role"] == "user")
+        # the prompt's shape is known from here on, so a refusal below (rate limit, budget) is
+        # recorded with it and drift sees the traffic that was refused, not a zero-length prompt
+        base.update(prompt_len=len(user_text), signature=signature(user_text))
 
         # 2. rate limit (counts requests still in flight, not only finished ones)
         window = 60.0
@@ -338,8 +341,6 @@ class Gateway:
             version=version,
             diff_est=decision.level,
             route_reason=decision.reason,
-            prompt_len=len(user_text),
-            signature=signature(user_text),
         )
 
         if req.dry_run:

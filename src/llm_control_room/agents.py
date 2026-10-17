@@ -25,9 +25,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import router as routing
 from ._vendor.limits import Budget, BudgetExceeded
 from .gateway import Gateway, GatewayError, GatewayRequest
 from .guard import screen
+from .providers import count_tokens
 from .sandbox import PROFILES, docker_available, docker_status, run_code
 from .store import Store
 
@@ -381,6 +383,14 @@ LIMIT_CAPS = {
     "max_repeats": 50,
 }
 MAX_RUNNING = 8  # agent threads alive at once
+THINK_TOKENS = 60  # completion cap of one reasoning call
+ANSWER_TOKENS = 200  # completion cap of the composed final answer
+
+
+def _compose_context(history: list[dict]) -> str:
+    return " ".join(str(h["observation"]) for h in history if h["action"] == "search_docs")
+
+
 CEILINGS = {"read": RiskTier.READ, "write": RiskTier.WRITE, "external": RiskTier.EXTERNAL}
 
 
@@ -520,17 +530,76 @@ class AgentRunner:
             "UPDATE runs SET status=?, result=? WHERE id=?", (status, json.dumps(result), rid)
         )
 
-    def _think(self, tenant, scenario, goal, history, budget) -> dict | None:
-        prompt = (
+    def _call_bound(self, tenant: str, text: str, max_tokens: int, context: str = "") -> float:
+        """The most one gateway call can cost: every model the call could end up on (the route
+        and its fallbacks) priced at the full ``max_tokens``, with room for redaction placeholders
+        that are longer than what they replace. Checked before the call, so a run's cost limit is
+        never crossed by the call that would cross it."""
+        t = self.gateway.tenants.get(tenant)
+        if t is None:
+            return 0.0
+        try:
+            d = routing.decide(
+                text,
+                self.gateway.providers.models(),
+                context=context,
+                min_quality=t["min_quality"],
+                allowed=t["allowed_models"] or None,
+                extra_fallbacks=t["fallbacks"],
+            )
+        except ValueError:
+            return 0.0
+        sent = f"Context:\n{context}\n\nQuestion: {text}" if context else text
+        ptoks = int(count_tokens(sent) * 1.25) + 16
+        worst = 0.0
+        for m in [d.primary, *d.chain]:
+            info = self.gateway.providers.info(m)
+            if info:
+                worst = max(worst, info.cost(ptoks, max_tokens))
+        return worst
+
+    def _over_cost(self, rid, seq, budget, need: float, what: str) -> bool:
+        """Stop the run on its cost limit when spending ``need`` more would cross it."""
+        if budget.usd + need <= budget.max_usd:
+            return False
+        self._log(
+            rid,
+            seq,
+            "budget_stop",
+            limit="cost",
+            max=budget.max_usd,
+            used=round(budget.usd, 6),
+            next=what,
+            next_usd=round(need, 6),
+        )
+        self._finish(
+            rid,
+            seq,
+            "budget_stopped",
+            budget,
+            reason=(
+                f"cost budget: {what} (up to ${need:.4f}) would take ${budget.usd:.4f} past "
+                f"the ${budget.max_usd:.4g} limit"
+            ),
+            limit="cost",
+        )
+        return True
+
+    @staticmethod
+    def _think_prompt(goal, history) -> str:
+        return (
             f"Goal: {goal}\nObservations so far: {len(history)}. "
             f"Last: {_last_obs(history)[:160]}\nWhat is the next step?"
         )
+
+    def _think(self, tenant, scenario, goal, history, budget) -> dict | None:
+        prompt = self._think_prompt(goal, history)
         try:
             r = self.gateway.handle(
                 GatewayRequest(
                     tenant=tenant,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=60,
+                    max_tokens=THINK_TOKENS,
                     feature=f"agent-{scenario}",
                     source="agent",
                 )
@@ -576,6 +645,9 @@ class AgentRunner:
                     return self._finish(
                         rid, seq, "budget_stopped", budget, reason=str(stop), limit=stop.kind
                     )
+                bound = self._call_bound(tenant, self._think_prompt(goal, history), THINK_TOKENS)
+                if self._over_cost(rid, seq, budget, bound, "the next reasoning call"):
+                    return
                 thought = self._think(tenant, scenario, goal, history, budget)
                 if thought and "error" in thought:
                     self._log(rid, seq, "error", message=thought["error"])
@@ -620,9 +692,13 @@ class AgentRunner:
                     why=action.why,
                 )
                 if action.tool == "finish":
-                    answer = action.args.get("answer") or self._compose(
-                        tenant, goal, history, rid, seq
-                    )
+                    answer = action.args.get("answer")
+                    if not answer:
+                        context = _compose_context(history)
+                        need = self._call_bound(tenant, goal, ANSWER_TOKENS, context)
+                        if self._over_cost(rid, seq, budget, need, "composing the answer"):
+                            return
+                        answer = self._compose(tenant, goal, context, rid, seq, budget)
                     return self._finish(rid, seq, "completed", budget, answer=answer)
                 tool = tools.get(action.tool)
                 budget.record_tool_call()
@@ -630,7 +706,6 @@ class AgentRunner:
                     self._log(rid, seq, "tool_error", tool=action.tool, error="no such tool")
                     history.append({"action": action.tool, "observation": "ERROR: no such tool"})
                     continue
-                budget.record_cost(tool.usd)
                 approved = tool.tier <= ceiling
                 if not approved:
                     verdict = self._await_approval(rid, seq, tool, action, budget)
@@ -653,6 +728,10 @@ class AgentRunner:
                             rid, seq, "denied", budget, reason=f"{tool.name} denied"
                         )
                     self._log(rid, seq, "approval", decision="approved", tool=tool.name)
+                # a tool is paid for when it runs: not when it is refused, never past the limit
+                if self._over_cost(rid, seq, budget, tool.usd, tool.name):
+                    return
+                budget.record_cost(tool.usd)
                 try:
                     obs = tool.fn(**action.args)
                     self._log(
@@ -676,7 +755,7 @@ class AgentRunner:
             self.pending.pop(rid, None)
 
     def _tool_error(self, rid, seq, tool, msg, history, action) -> None:
-        self._log(rid, seq, "tool_error", tool=tool.name, error=msg[:400])
+        self._log(rid, seq, "tool_error", tool=tool.name, error=msg[:400], usd=tool.usd)
         history.append(
             {"action": tool.name, "args": action.args, "observation": f"ERROR: {msg[:300]}"}
         )
@@ -701,8 +780,7 @@ class AgentRunner:
         self.store.run("UPDATE runs SET status='running' WHERE id=?", (rid,))
         return decision
 
-    def _compose(self, tenant, goal, history, rid, seq) -> str:
-        context = " ".join(str(h["observation"]) for h in history if h["action"] == "search_docs")
+    def _compose(self, tenant, goal, context, rid, seq, budget) -> str:
         try:
             r = self.gateway.handle(
                 GatewayRequest(
@@ -710,12 +788,13 @@ class AgentRunner:
                     messages=[{"role": "user", "content": goal}],
                     context=context,
                     feature="agent-answer",
-                    max_tokens=200,
+                    max_tokens=ANSWER_TOKENS,
                     source="agent",
                 )
             )
         except GatewayError as exc:
             return f"could not compose an answer: {exc.message}"
+        budget.record_cost(r["usage"]["usd"])  # the answer is a billed call of this run too
         self._log(
             rid,
             seq,

@@ -355,7 +355,7 @@ class Simulator:
             if not self.core.tenants.get("trial"):
                 self.core.tenants.create("trial", budget_usd=0.0004, rpm=600, redact_pii=True)
             else:
-                self.core.tenants.update("trial", budget_usd=0.004)
+                self.core.tenants.update("trial", budget_usd=0.0004)  # same as a first run
             if not self.core.tenants.keys("trial"):
                 self.core.tenants.add_key("trial", "demo key", key="lcr-demo-trial")
         return ""

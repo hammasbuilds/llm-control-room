@@ -431,9 +431,11 @@ def create_app(
         out = []
         for t in core.tenants.list():
             t["keys"] = core.tenants.keys(t["name"])
+            # the same sum the gateway's budget check uses: shadow runs the tenant's requests
+            # caused are spend against its budget, so the card must count them too
             spent = store.one(
-                "SELECT COALESCE(SUM(usd),0) AS s, COUNT(*) AS n FROM calls WHERE tenant=? "
-                "AND shadow=0 AND at>? AND at<=?",
+                "SELECT COALESCE(SUM(usd),0) AS s, COALESCE(SUM(shadow=0),0) AS n FROM calls "
+                "WHERE tenant=? AND at>? AND at<=?",
                 (t["name"], core.clock() - t["budget_window_s"], core.clock()),
             )
             t["spent_usd"], t["calls_in_window"] = round(spent["s"], 6), spent["n"]
@@ -637,12 +639,22 @@ def create_app(
     @app.get("/api/obs", dependencies=[Depends(admin)])
     def observability(hours: float = 24.0, tenant: str = "", feature: str = ""):
         rows = obs.fetch(store, since=since(hours), tenant=tenant, feature=feature)
+        sh = obs.fetch(store, since=since(hours), tenant=tenant, feature=feature, shadow=True)
+        summary = obs.summarise(rows)
+        if summary.get("calls"):
+            summary["shadow_usd"] = round(sum(r["usd"] for r in sh), 6)
+            summary["total_usd"] = round(summary["usd"] + summary["shadow_usd"], 6)
         return {
-            "summary": obs.summarise(rows),
+            "summary": summary,
             "series": obs.timeseries(rows, 24),
-            "by_tenant": obs.group_by(rows, "tenant"),
-            "by_feature": obs.group_by(rows, "feature"),
-            "by_model": obs.group_by([r for r in rows if r["model"]], "model"),
+            "by_tenant": obs.add_shadow_spend(obs.group_by(rows, "tenant"), sh, "tenant"),
+            "by_feature": obs.add_shadow_spend(obs.group_by(rows, "feature"), sh, "feature"),
+            "by_model": obs.add_shadow_spend(
+                obs.group_by([r for r in rows if r["model"]], "model"),
+                [r for r in sh if r["model"]],
+                "model",
+                add_missing=True,
+            ),
             "drift": obs.drift(rows),
             "alerts": core.alerts.list(20),
         }

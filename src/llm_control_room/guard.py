@@ -72,7 +72,8 @@ PII_PATTERNS: list[tuple[str, re.Pattern]] = [
         "phone_intl",
         re.compile(r"(?<![\w+])\+\d{1,3}[ \-]?\(?\d{2,4}\)?[ \-]?\d{3,4}[ \-]?\d{3,4}\b"),
     ),
-    ("credit_card", re.compile(r"\b(?:\d[ \-]?){13,19}\b")),
+    # up to two separators between digits, so "4111  1111  1111  1111" is still a card
+    ("credit_card", re.compile(r"\b(?:\d[ \-]{0,2}){13,19}\b")),
     ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")),
 ]
 

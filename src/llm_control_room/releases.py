@@ -39,10 +39,11 @@ class ReleaseError(ValueError):
 
 
 def percentile(values: list[float], p: float) -> float:
+    """Nearest rank: the smallest value with at least p% of the values at or below it."""
     if not values:
         return 0.0
     ordered = sorted(values)
-    i = max(0, min(len(ordered) - 1, int(round(p / 100 * len(ordered))) - 1))
+    i = max(0, min(len(ordered) - 1, math.ceil(p / 100 * len(ordered) - 1e-9) - 1))
     return round(ordered[i], 3)
 
 
