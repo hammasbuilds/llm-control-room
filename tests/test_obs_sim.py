@@ -8,17 +8,17 @@ from llm_control_room.providers import MOCK_MODELS
 from llm_control_room.simulator import SCENARIOS, make_request
 
 
-def rows_for(core, **kw):
-    return obs.fetch(core.store, **kw)
+def page(core, **kw):
+    return obs.obs_page(core.store, **kw)
 
 
 def test_latency_percentiles_exclude_cache_hits(core):
     for i in range(30):
         ask(core, f"Explain how an index works ({i})")
-    base = obs.summarise(rows_for(core))["p50_ms"]
+    base = page(core)["summary"]["p50_ms"]
     for _ in range(300):
         ask(core, "Explain how an index works (1)")  # 300 cache hits at 2 ms
-    s = obs.summarise(rows_for(core))
+    s = page(core)["summary"]
     assert s["cache_hit_rate"] > 0.8 and s["p50_ms"] == base, (
         "cache hits must not move the percentiles"
     )
@@ -27,8 +27,12 @@ def test_latency_percentiles_exclude_cache_hits(core):
 def test_cost_per_success_and_missing_grounding_is_not_zero(core):
     ask(core, "Hi there")
     ask(core, "How long do refunds take?", context="Refunds take 5 to 7 business days.")
-    s = obs.summarise(rows_for(core))
-    scored = [r["grounding"] for r in rows_for(core) if r["grounding"] is not None]
+    s = page(core)["summary"]
+    scored = [
+        r["grounding"]
+        for r in core.store.all("SELECT grounding FROM calls")
+        if r["grounding"] is not None
+    ]
     assert s["calls"] == 2 and s["grounded_n"] == 1 and s["mean_grounding"] == scored[0]
     assert s["usd_per_success"] >= s["usd_per_call"]
 
@@ -36,31 +40,31 @@ def test_cost_per_success_and_missing_grounding_is_not_zero(core):
 def test_group_by_attributes_cost(core):
     ask(core, "Hi there", tenant="acme", feature="chat")
     ask(core, "Prove this step by step with trade-offs", tenant="initech", feature="analysis")
-    g = {x["tenant"]: x for x in obs.group_by(rows_for(core), "tenant")}
+    g = {x["tenant"]: x for x in page(core)["by_tenant"]}
     assert g["initech"]["usd"] > g["acme"]["usd"]
-    assert {x["feature"] for x in obs.group_by(rows_for(core), "feature")} == {"chat", "analysis"}
+    assert {x["feature"] for x in page(core)["by_feature"]} == {"chat", "analysis"}
 
 
 def test_drift_is_stable_on_a_stable_day_and_flags_a_shift(app, sim):
     core = app.state.core
     sim.run("normal-day", n=800, seed=1)
-    stable = obs.drift(rows_for(core))
+    stable = page(core)["drift"]
     assert stable["ready"] and max(d["psi"] for d in stable["dimensions"]) < 0.25
     core.store.wipe_traffic()
     sim.run("drift", n=800, seed=1)
-    shifted = obs.drift(rows_for(core))
+    shifted = page(core)["drift"]
     assert max(d["psi"] for d in shifted["dimensions"]) > 0.25
     assert shifted["worst"] in {d["dimension"] for d in shifted["dimensions"]}
 
 
 def test_drift_needs_enough_calls(core):
-    assert obs.drift(rows_for(core))["ready"] is False
+    assert page(core)["drift"]["ready"] is False
 
 
 def test_drift_reads_no_prompts(core):
     for i in range(60):
         ask(core, f"Explain how an index works ({i})")
-    cols = set(rows_for(core)[0])
+    cols = {r["name"] for r in core.store.all("PRAGMA table_info(calls)")}
     assert not {"prompt", "text", "content", "messages"} & cols
 
 
@@ -85,11 +89,11 @@ def test_alerts_need_a_minimum_sample(core):
 
 def test_routing_report_and_frontier(app, sim):
     sim.run("normal-day", n=500, seed=1)
-    rows = rows_for(app.state.core)
-    rep = obs.routing_report(rows)
+    got = obs.routing_page(app.state.core.store, list(MOCK_MODELS))
+    rep = got["report"]
     assert rep["saved_usd"] > 0 and 0 <= rep["confusion"]["accuracy"] <= 1
     assert sum(sum(r) for r in rep["confusion"]["matrix"]) == rep["confusion"]["labelled"]
-    f = obs.frontier(rows, list(MOCK_MODELS))
+    f = got["frontier"]
     names = {p["name"]: p for p in f["points"]}
     assert names["always nano-mock"]["usd"] < names["always titan-mock"]["usd"]
     assert names["router @ quality 0.75"]["usd"] < names["always titan-mock"]["usd"]
@@ -101,7 +105,8 @@ def test_routing_report_and_frontier(app, sim):
 
 def test_timeseries_buckets(app, sim):
     sim.run("normal-day", n=300, seed=1)
-    series = obs.timeseries(rows_for(app.state.core), 12)
+    with obs.window(app.state.core.store, buckets=12) as w:
+        series = w.timeseries()
     assert len(series) == 12 and sum(p.get("calls", 0) for p in series) == 300
 
 
@@ -119,10 +124,10 @@ def test_same_seed_gives_the_same_traffic():
 def test_scenario_is_reproducible(app):
     sim, core = app.state.sim, app.state.core
     sim.run("normal-day", n=200, seed=4)
-    first = [(r["model"], r["usd"]) for r in obs.fetch(core.store)]
+    first = core.store.all("SELECT model, usd FROM calls ORDER BY at, id")
     core.store.wipe_traffic()
     sim.run("normal-day", n=200, seed=4)
-    assert first == [(r["model"], r["usd"]) for r in obs.fetch(core.store)]
+    assert first == core.store.all("SELECT model, usd FROM calls ORDER BY at, id")
 
 
 def test_simulator_does_not_leave_the_clock_or_faults_changed(app):

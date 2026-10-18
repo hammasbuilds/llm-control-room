@@ -626,11 +626,9 @@ def create_app(
 
     @app.get("/api/routing", dependencies=[Depends(admin)])
     def routing(hours: float = 24.0):
-        rows = obs.fetch(store, since=since(hours))
         baseline = core.gateway.setting("baseline_model", "")
         return {
-            "report": obs.routing_report(rows),
-            "frontier": obs.frontier(rows, core.providers.models(), baseline),
+            **obs.routing_page(store, core.providers.models(), since=since(hours)),
             "baseline_model": baseline or max(core.providers.models(), key=lambda m: m.usd_out).id,
         }
 
@@ -638,24 +636,8 @@ def create_app(
 
     @app.get("/api/obs", dependencies=[Depends(admin)])
     def observability(hours: float = 24.0, tenant: str = "", feature: str = ""):
-        rows = obs.fetch(store, since=since(hours), tenant=tenant, feature=feature)
-        sh = obs.fetch(store, since=since(hours), tenant=tenant, feature=feature, shadow=True)
-        summary = obs.summarise(rows)
-        if summary.get("calls"):
-            summary["shadow_usd"] = round(sum(r["usd"] for r in sh), 6)
-            summary["total_usd"] = round(summary["usd"] + summary["shadow_usd"], 6)
         return {
-            "summary": summary,
-            "series": obs.timeseries(rows, 24),
-            "by_tenant": obs.add_shadow_spend(obs.group_by(rows, "tenant"), sh, "tenant"),
-            "by_feature": obs.add_shadow_spend(obs.group_by(rows, "feature"), sh, "feature"),
-            "by_model": obs.add_shadow_spend(
-                obs.group_by([r for r in rows if r["model"]], "model"),
-                [r for r in sh if r["model"]],
-                "model",
-                add_missing=True,
-            ),
-            "drift": obs.drift(rows),
+            **obs.obs_page(store, since=since(hours), tenant=tenant, feature=feature),
             "alerts": core.alerts.list(20),
         }
 

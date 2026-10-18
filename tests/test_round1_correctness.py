@@ -43,9 +43,8 @@ def test_percentile_is_nearest_rank():
 def test_routing_report_does_not_credit_cache_hits_to_the_router(core):
     for _ in range(5):
         ask(core, "Explain how webhooks retry on failure.")  # 1 call, 4 cache hits
-    rows = obs.fetch(core.store)
-    called = [r for r in rows if not r["cached"]]
-    rep = obs.routing_report(rows)
+    called = core.store.all("SELECT * FROM calls WHERE cached=0")
+    rep = obs.routing_page(core.store, core.providers.models())["report"]
     assert rep["calls"] == 1 and rep["cache_hits"] == 4
     assert abs(rep["baseline_usd"] - round(called[0]["baseline_usd"], 6)) < 1e-9
     assert sum(rep["by_model"].values()) == 1
@@ -70,29 +69,16 @@ def test_refused_requests_keep_their_prompt_shape(core):
 
 
 def test_drift_leaves_out_rows_without_a_prompt_shape(core):
-    rows = []
-    for i in range(100):
-        rows.append(
-            {
-                "at": float(i),
-                "prompt_len": 40,
-                "signature": "factual:s:abc",
-                "feature": "faq",
-                "tenant": "acme",
-            }
-        )
+    rows = [(float(i), 40, "factual:s:abc") for i in range(100)]
     # 40 rows in the current window with no shape (blocked before the prompt was read)
-    for i in range(40):
-        rows.append(
-            {
-                "at": 99.5 + i / 100,
-                "prompt_len": 0,
-                "signature": "",
-                "feature": "faq",
-                "tenant": "acme",
-            }
+    rows += [(99.5 + i / 100, 0, "") for i in range(40)]
+    for at, n, sig in rows:
+        core.store.run(
+            "INSERT INTO calls(trace, at, tenant, feature, prompt_len, signature) "
+            "VALUES('t', ?, 'acme', 'faq', ?, ?)",
+            (at, n, sig),
         )
-    d = obs.drift(rows)
+    d = obs.obs_page(core.store)["drift"]
     assert d["reference_n"] + d["current_n"] == 100
     assert all(x["psi"] < 0.1 for x in d["dimensions"])
 

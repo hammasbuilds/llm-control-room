@@ -1,9 +1,11 @@
-"""SQLite storage. One connection, one lock, WAL. No prompt text is ever written here."""
+"""SQLite storage. One writing connection behind one lock, WAL, plus per-thread read connections
+for the long admin reads. No prompt text is ever written here."""
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -37,9 +39,14 @@ CREATE TABLE IF NOT EXISTS calls (
     redactions TEXT NOT NULL DEFAULT '[]', grounding REAL, quality_ok INTEGER,
     prompt_len INTEGER NOT NULL DEFAULT 0, signature TEXT NOT NULL DEFAULT '',
     shadow INTEGER NOT NULL DEFAULT 0, shadow_sim REAL, source TEXT NOT NULL DEFAULT 'api');
-CREATE INDEX IF NOT EXISTS calls_tenant_at ON calls(tenant, at);
+-- (tenant, at, usd) covers the gateway's budget check, a sum over the tenant's whole budget
+-- window on every request; it replaces the (tenant, at) index of earlier versions
+CREATE INDEX IF NOT EXISTS calls_tenant_at_usd ON calls(tenant, at, usd);
+DROP INDEX IF EXISTS calls_tenant_at;
 CREATE INDEX IF NOT EXISTS calls_at ON calls(at);
 CREATE INDEX IF NOT EXISTS calls_release ON calls(release, version, at);
+-- the admin pages read the served and the shadow calls of a window in call order
+CREATE INDEX IF NOT EXISTS calls_shadow_at ON calls(shadow, at);
 CREATE TABLE IF NOT EXISTS releases (
     name TEXT PRIMARY KEY, created REAL NOT NULL, challenger_mode TEXT NOT NULL DEFAULT 'canary',
     auto_rollback INTEGER NOT NULL DEFAULT 1, slo TEXT NOT NULL DEFAULT '{}');
@@ -66,6 +73,9 @@ CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
 
+READERS = 3  # read connections per store: admin pages computed at the same time
+
+
 def default_home() -> Path:
     return Path(os.environ.get("LCR_HOME") or Path.home() / ".llm-control-room")
 
@@ -90,6 +100,9 @@ class Store:
                         f"ALTER TABLE tenants ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'"
                     )
         self._depth = 0
+        self._readers: list[sqlite3.Connection] = []
+        self._idle: queue.SimpleQueue[sqlite3.Connection] = queue.SimpleQueue()
+        self._readers_lock = threading.Lock()  # never self.lock: readers must not wait on it
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -123,6 +136,51 @@ class Store:
         rows = self.all(sql, args)
         return rows[0] if rows else None
 
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        """A connection for long reads (the admin pages), inside one read transaction so
+        everything read through it is one snapshot. On a file database it is one of a few
+        pooled read connections and never takes ``self.lock``: in WAL mode a reader does not
+        block the writer, so the gateway goes on recording calls while a page is computed. A
+        ``:memory:`` database exists only on the main connection, so there it is that one,
+        under the lock."""
+        if self.path == ":memory:":
+            with self.lock:
+                yield from self._snapshot(self.con)
+            return
+        con = self._take_reader()
+        try:
+            yield from self._snapshot(con)
+        finally:
+            self._idle.put(con)
+
+    def _take_reader(self) -> sqlite3.Connection:
+        try:
+            return self._idle.get_nowait()
+        except queue.Empty:
+            pass
+        with self._readers_lock:
+            make = len(self._readers) < READERS
+            if make:
+                con = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+                con.row_factory = sqlite3.Row
+                # a window's GROUP BY sorts fit in memory, on two helper threads
+                con.execute("PRAGMA cache_size=-32768")
+                con.execute("PRAGMA temp_store=MEMORY")
+                con.execute("PRAGMA threads=2")
+                self._readers.append(con)
+        return con if make else self._idle.get()
+
+    @staticmethod
+    def _snapshot(con: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+        # a savepoint works both alone (it opens the transaction) and nested in transaction()
+        con.execute("SAVEPOINT lcr_read")
+        try:
+            yield con
+        finally:
+            con.execute("ROLLBACK TO lcr_read")
+            con.execute("RELEASE lcr_read")
+
     def kv_get(self, key: str, default=None):
         row = self.one("SELECT v FROM kv WHERE k=?", (key,))
         return json.loads(row["v"]) if row else default
@@ -139,5 +197,8 @@ class Store:
                 self.run(f"DELETE FROM {t}")
 
     def close(self) -> None:
-        with self.lock:
+        with self.lock, self._readers_lock:
+            for con in self._readers:
+                con.close()
+            self._readers.clear()
             self.con.close()

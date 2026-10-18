@@ -25,6 +25,9 @@
     const b = e.target.closest && e.target.closest("button, .btn");
     if (b && !b.disabled) { last = b; armed = b; setTimeout(() => { if (armed === b) armed = null; }, 0); }
   }, true);
+  // ...and disarmed as soon as every click handler has run: a reply already waiting in the queue
+  // can run before that timeout, and Stop, disabled then by the batch it ended, kept a spinner
+  window.addEventListener("click", () => { armed = null; });
 
   document.addEventListener("pointermove", (e) => {
     if (!fine.matches || reduce.matches) return;
