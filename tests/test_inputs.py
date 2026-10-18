@@ -199,7 +199,7 @@ def test_terms_import_merge_replace_and_enforced_by_gateway(client):
     assert served.json()["rows"][0]["redactions"]
     assert client.post(url, json={"kind": "nope", "content": "x"}).status_code == 400
     ghost = client.post("/api/tenants/ghost/terms", json={"kind": "deny", "content": "x"})
-    assert ghost.status_code == 400
+    assert ghost.status_code == 404  # no such tenant: not found, not a bad request
     many = "\n".join(f"t{i}" for i in range(150))
     assert client.post(url, json={"kind": "deny", "mode": "replace", "content": many}).status_code == 400
 

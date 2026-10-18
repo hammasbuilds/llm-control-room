@@ -49,8 +49,17 @@ class Core:
         self.clock = fn or self.real_clock
 
     def seed_tenants(self) -> None:
+        """Create each demo tenant and its well-known key once per database. What an admin does
+        to them afterwards stands across restarts: a revoked demo key stays revoked and a
+        deleted demo tenant stays deleted (re-adding the key used to hit its UNIQUE hash and
+        stop the app from starting)."""
+        done = set(self.store.kv_get("seeded_demo_tenants", []))
         for name, policy in DEMO_TENANTS.items():
+            if name in done:
+                continue
             if not self.tenants.get(name):
                 self.tenants.create(name, **policy)
-            if not any(not k["revoked"] for k in self.tenants.keys(name)):
+            if not self.tenants.has_key(demo_key(name)):
                 self.tenants.add_key(name, "demo key", key=demo_key(name))
+            done.add(name)
+        self.store.kv_set("seeded_demo_tenants", sorted(done))

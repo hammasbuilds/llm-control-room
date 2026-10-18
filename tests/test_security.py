@@ -172,7 +172,10 @@ def test_failed_api_keys_are_throttled_per_client(client):
     bad = {"Authorization": "Bearer lcr-guess"}
     codes = [chat(client, headers=bad).status_code for _ in range(25)]
     assert codes[0] == 401 and codes[-1] == 429
-    assert chat(client).status_code == 429  # the lockout is per client address
+    # bad keys stay throttled, but a valid key from the same address is not locked out with them
+    # (every local app shares 127.0.0.1, so one app's stale key used to lock out every tenant)
+    assert chat(client, headers=bad).status_code == 429
+    assert chat(client).status_code == 200
 
 
 def test_a_tenant_cannot_poison_release_windows_with_mock_directives(core):
@@ -484,7 +487,9 @@ def test_oversized_requests_and_labels_are_bounded(core):
 def test_max_tokens_is_clamped(core):
     r = ask(core, "Say hello please", max_tokens=10**9)
     assert r["usage"]["completion_tokens"] < 5000
-    assert ask(core, "Say hello again please", max_tokens=-5)["text"] is not None
+    with pytest.raises(GatewayError) as e:  # refused, not silently turned into 1 token
+        ask(core, "Say hello again please", max_tokens=-5)
+    assert e.value.status == 400
 
 
 def test_nan_temperature_is_refused(core):

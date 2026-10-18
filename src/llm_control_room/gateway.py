@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from . import router as routing
 from ._vendor.signature import signature
-from .guard import screen, screen_output
+from .guard import canon, redact_label, screen, screen_joined, screen_output
 from .providers import (
     _DIRECTIVE,
     ChatRequest,
@@ -73,21 +73,50 @@ class GatewayRequest:
     dry_run: bool = False
 
 
+def _bad(message: str) -> GatewayError:
+    return GatewayError(400, "bad_request", message)
+
+
+def _encodable(text: str, what: str) -> str:
+    # a lone surrogate ("\ud800" in JSON) cannot be stored or sent anywhere as UTF-8; refusing it
+    # here, before the call, keeps a request from reaching the provider and then failing to be
+    # recorded (a call nobody was charged for)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _bad(f"{what} contains an unpaired surrogate (invalid Unicode)") from None
+    return text
+
+
 def normalise_messages(messages: list[dict]) -> list[dict]:
     if not isinstance(messages, list) or len(messages) > MAX_MESSAGES:
-        raise GatewayError(400, "bad_request", f"messages must be a list of at most {MAX_MESSAGES}")
+        raise _bad(f"messages must be a list of at most {MAX_MESSAGES}")
     out = []
-    for m in messages:
+    for i, m in enumerate(messages):
         if not isinstance(m, dict):
-            raise GatewayError(400, "bad_request", "every message must be an object")
-        content = m.get("content", "")
-        if isinstance(content, list):
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        out.append({"role": str(m.get("role", "user")).lower()[:20], "content": str(content)})
+            raise _bad("every message must be an object")
+        content = m.get("content")
+        if content is None:
+            content = ""  # OpenAI allows null content (e.g. an assistant turn with tool calls)
+        elif isinstance(content, list):
+            parts = []
+            for p in content:
+                if not isinstance(p, dict) or p.get("type", "text") != "text":
+                    continue  # images and other parts carry no text to screen or route
+                if not isinstance(p.get("text"), str):
+                    raise _bad(f"messages[{i}]: a text part needs a string 'text'")
+                parts.append(p["text"])
+            content = "\n".join(parts)
+        elif not isinstance(content, str):
+            raise _bad(f"messages[{i}].content must be a string or a list of text parts")
+        role = m.get("role", "user")
+        role = (role if isinstance(role, str) else str(role)).lower()[:20]
+        out.append({"role": role, "content": _encodable(content, f"messages[{i}]")})
     if sum(len(m["content"]) for m in out) > MAX_CHARS:
         raise GatewayError(413, "too_large", f"messages are limited to {MAX_CHARS} characters")
-    if not any(m["role"] == "user" and m["content"].strip() for m in out):
-        raise GatewayError(400, "bad_request", "messages must contain a non-empty user message")
+    # a prompt of only invisible format characters (zero-width space, joiners) is empty too
+    if not any(m["role"] == "user" and canon(m["content"]).strip() for m in out):
+        raise _bad("messages must contain a non-empty user message")
     return out
 
 
@@ -201,18 +230,24 @@ class Gateway:
         messages = normalise_messages(req.messages)
         if not isinstance(req.context, str) or len(req.context) > MAX_CHARS:
             raise GatewayError(400, "bad_request", "context must be a string of bounded size")
-        if not (isinstance(req.max_tokens, int) and 1 <= req.max_tokens <= MAX_TOKENS_CAP):
-            req.max_tokens = max(1, min(int(req.max_tokens or 512), MAX_TOKENS_CAP))
+        _encodable(req.context, "context")
+        if isinstance(req.max_tokens, bool) or not isinstance(req.max_tokens, int):
+            raise GatewayError(400, "bad_request", "max_tokens must be a whole number")
+        if req.max_tokens < 1:
+            raise GatewayError(400, "bad_request", "max_tokens must be at least 1")
+        req.max_tokens = min(req.max_tokens, MAX_TOKENS_CAP)
         if not math.isfinite(req.temperature):
             raise GatewayError(400, "bad_request", "temperature must be a finite number")
-        req.feature = clean_label(req.feature, "default")
+        # labels are stored and shown on every admin page: a key or an address pasted into one
+        # must not be kept there in the clear
+        req.feature = clean_label(redact_label(str(req.feature or "")), "default")
         trace = uuid.uuid4().hex[:16]
         base = {
             "trace": trace,
             "at": started_at,
             "tenant": req.tenant,
             "feature": req.feature,
-            "requested": clean_label(req.model, "auto", 80),
+            "requested": clean_label(redact_label(str(req.model or "")), "auto", 80),
             "diff_true": req.true_difficulty,
             "source": req.source,
         }
@@ -242,6 +277,13 @@ class Gateway:
             # a tenant must not be able to steer the mock provider's test directives
             text = _DIRECTIVE.sub(lambda d: "[ [" + d.group(0)[2:], res.text)
             guarded.append({"role": m["role"], "content": text})
+        # a key split across messages is still one key to the provider
+        texts, cross = screen_joined(
+            [m["content"] for m in guarded], redact_pii=tenant["redact_pii"]
+        )
+        if cross:
+            guarded = [{**m, "content": t} for m, t in zip(guarded, texts, strict=True)]
+            redactions += cross
         # an instruction split across messages is still one instruction to the model
         joined = screen(
             "\n".join(m["content"] for m in messages if m["role"] != "system"),
@@ -311,6 +353,7 @@ class Gateway:
         sys_prefix = ""
         if model_choice != "auto" and self.releases.exists(model_choice):
             release = model_choice
+            base["_epoch"] = self.releases.epoch.get(release, 0)
             key = req.session_key or hashlib.sha256(user_text.encode()).hexdigest()[:16]
             served, shadows = self.releases.resolve(release, f"{req.tenant}:{key}")
             version = served["version"]
@@ -351,18 +394,36 @@ class Gateway:
                 "version": version,
             }
 
+        # what the provider will be sent (the context is folded into the last user turn)
+        chat_messages = send
+        if context:
+            chat_messages = [
+                *send[:-1],
+                {
+                    "role": "user",
+                    "content": f"Context:\n{context}\n\nQuestion: {send[-1]['content']}",
+                },
+            ]
+        sent_tokens = count_tokens("\n".join(m["content"] for m in chat_messages))
+        chain = [decision.primary, *decision.chain]
+
         # 5. budget: money already spent (shadow runs included: the tenant's request caused
-        #    them) plus money reserved by requests still in flight
+        #    them) plus money reserved by requests still in flight. A request is admitted on the
+        #    router's estimate, but what it reserves is its allowance: what it could cost at
+        #    max_tokens on the dearest model of its chain, or, once the budget is nearly gone,
+        #    an eighth of the headroom left (never less than twice the estimate, never more than
+        #    the headroom). The call is then held to that allowance (step 7), so neither one long
+        #    answer nor a burst of concurrent ones can take the spend past the budget, and a
+        #    burst near the end still shares what is left instead of one request taking it all.
         with self._lock:
-            spent = self.store.one(
-                "SELECT COALESCE(SUM(usd),0) AS s FROM calls WHERE tenant=? AND at>? AND at<=?",
-                (req.tenant, started_at - tenant["budget_window_s"], started_at),
-            )["s"]
-            reserved = self._reserved.get(req.tenant, 0.0)
-            over = spent + reserved + decision.expected_usd > tenant["budget_usd"]
+            spent, headroom = self._headroom(req.tenant, tenant, started_at)
+            over = decision.expected_usd > headroom
             if not over:
-                self._reserved[req.tenant] = reserved + decision.expected_usd
-                held["usd"] = decision.expected_usd
+                share = max(2 * decision.expected_usd, headroom / 8)
+                bound = self._bound(chain, sent_tokens, req.max_tokens)
+                allowance = min(headroom, bound, share)
+                self._reserved[req.tenant] = self._reserved.get(req.tenant, 0.0) + allowance
+                held["usd"] = allowance
         if over:
             self._record(base, error="budget exhausted", error_kind="budget", redactions=redactions)
             raise GatewayError(
@@ -403,28 +464,27 @@ class Gateway:
                 self._release_observe(release, version, rec, "")
                 return self._result(rec, hit["text"], decision, redactions, [], hit["model"])
 
-        # 7. call with fallback
+        # 7. call with fallback, each attempt held to the allowance
         chat = ChatRequest(
-            send, req.max_tokens, req.temperature, context, req.true_difficulty, decision.level
+            chat_messages, req.max_tokens, req.temperature, context, req.true_difficulty,
+            decision.level,
         )
-        if context:
-            chat.messages = [
-                *send[:-1],
-                {
-                    "role": "user",
-                    "content": f"Context:\n{context}\n\nQuestion: {send[-1]['content']}",
-                },
-            ]
-            chat.context = context
         tag = f"{release}:{version}" if release else ""
         attempts: list[dict] = []
         comp = None
         used_model = ""
-        for model in [decision.primary, *decision.chain]:
+        unaffordable = 0
+        for model in chain:
             prov = self.providers.provider_for(model)
             if prov is None:
                 attempts.append({"model": model, "error": "no provider"})
                 continue
+            cap = self._affordable(model, sent_tokens, held["usd"])
+            if cap < 1:
+                unaffordable += 1
+                attempts.append({"model": model, "error": "over the remaining budget"})
+                continue
+            chat.max_tokens = min(req.max_tokens, cap)
             try:
                 comp = prov.complete(chat, model)
             except ProviderError as exc:
@@ -435,6 +495,16 @@ class Gateway:
             used_model = model
             break
 
+        if comp is None and unaffordable == len(attempts):
+            self._record(base, error="budget exhausted", error_kind="budget", redactions=redactions)
+            raise GatewayError(
+                429,
+                "budget_exceeded",
+                f"tenant budget ${tenant['budget_usd']:.4f} reached (spent ${spent:.4f}): "
+                "no model in the chain fits what is left",
+                spent=round(spent, 6),
+                limit=tenant["budget_usd"],
+            )
         if comp is None:
             rec = self._record(
                 base,
@@ -469,7 +539,9 @@ class Gateway:
         )
         grounding = grounding_score(text, context) if context else None
         # failed attempts before the success are real latency the caller waited for
-        latency = comp.latency_ms + 25.0 * len(attempts)
+        latency = comp.latency_ms + 25.0 * (len(attempts) - unaffordable)
+        # an answer cut short to fit the budget is not the answer: never cache it
+        cacheable = cacheable and chat.max_tokens == req.max_tokens
         rec = self._record(
             base,
             model=used_model,
@@ -499,11 +571,20 @@ class Gateway:
                 req.tenant,
             )
         self._release_observe(release, version, rec, tag)
+        # the call is recorded: its real cost is in the spend now, so free what it reserved
+        with self._lock:
+            self._reserved[req.tenant] = max(0.0, self._reserved.get(req.tenant, 0.0) - held["usd"])
+            held["usd"] = 0.0
 
-        # 9. shadows: same request, answer recorded and never returned, failures contained
+        # 9. shadows: same request, answer recorded and never returned, failures contained.
+        #    A shadow's cost counts against the tenant's budget, so it gets an allowance too and
+        #    is skipped when the budget has no room left for it.
         for sv in shadows:
             try:
-                self._run_shadow(release, sv, req, guarded, context, user_text, tenant, text, trace)
+                self._run_shadow(
+                    release, sv, req, guarded, context, user_text, tenant, text, trace,
+                    base.get("_epoch", 0),
+                )
             except Exception:  # a shadow must never be able to break serving
                 pass
         if release:
@@ -515,8 +596,37 @@ class Gateway:
 
     # ------------------------------------------------------------------ helpers
 
+    def _headroom(self, name: str, tenant: dict, at: float) -> tuple[float, float]:
+        """(spent in the window, budget left after in-flight reservations). Call under _lock."""
+        spent = self.store.one(
+            "SELECT COALESCE(SUM(usd),0) AS s FROM calls WHERE tenant=? AND at>? AND at<=?",
+            (name, at - tenant["budget_window_s"], at),
+        )["s"]
+        return spent, tenant["budget_usd"] - spent - self._reserved.get(name, 0.0)
+
+    def _bound(self, models: list[str], prompt_tokens: int, max_tokens: int) -> float:
+        """The most a call can cost: the dearest model it could end up on, at max_tokens."""
+        costs = [i.cost(prompt_tokens, max_tokens) for m in models if (i := self.providers.info(m))]
+        return max(costs, default=0.0)
+
+    def _affordable(self, model: str, prompt_tokens: int, allowance: float) -> int:
+        """The most completion tokens ``model`` can produce without its cost passing
+        ``allowance`` (0 when even the prompt does not fit). Token counts are this gateway's
+        own estimate; a real provider that counts the prompt differently can land a fraction
+        of a cent either side."""
+        info = self.providers.info(model)
+        if info is None or info.usd_out <= 0:
+            return MAX_TOKENS_CAP if info is None or info.cost(prompt_tokens, 0) <= allowance else 0
+        room = allowance - info.cost(prompt_tokens, 0)
+        if room < 0:
+            return 0
+        n = min(MAX_TOKENS_CAP, int(room * 1_000_000 / info.usd_out))
+        while n > 0 and info.cost(prompt_tokens, n) > allowance:
+            n -= 1
+        return n
+
     def _run_shadow(
-        self, release, sv, req, guarded, context, user_text, tenant, served_text, trace
+        self, release, sv, req, guarded, context, user_text, tenant, served_text, trace, epoch=0
     ):
         send = (
             [{"role": "system", "content": sv["system_prompt"]}] if sv["system_prompt"] else []
@@ -539,6 +649,28 @@ class Gateway:
                     "content": f"Context:\n{context}\n\nQuestion: {send[-1]['content']}",
                 },
             ]
+        ptoks = count_tokens("\n".join(m["content"] for m in chat.messages))
+        with self._lock:
+            _, headroom = self._headroom(req.tenant, tenant, self.clock())
+            allowance = max(0.0, min(headroom, self._bound([d.primary], ptoks, req.max_tokens)))
+            cap = self._affordable(d.primary, ptoks, allowance)
+            if cap < 1:
+                return None  # no room left in the budget for this shadow
+            self._reserved[req.tenant] = self._reserved.get(req.tenant, 0.0) + allowance
+        try:
+            chat.max_tokens = min(req.max_tokens, cap)
+            return self._shadow_call(
+                release, sv, req, d, chat, context, user_text, served_text, trace, epoch
+            )
+        finally:
+            with self._lock:
+                self._reserved[req.tenant] = max(
+                    0.0, self._reserved.get(req.tenant, 0.0) - allowance
+                )
+
+    def _shadow_call(
+        self, release, sv, req, d, chat, context, user_text, served_text, trace, epoch
+    ):
         tag = f"{release}:{sv['version']}"
         base = {
             "trace": trace,
@@ -555,6 +687,7 @@ class Gateway:
             "signature": signature(user_text),
             "shadow": 1,
             "source": req.source,
+            "_epoch": epoch,
         }
         prov = self.providers.provider_for(d.primary)
         try:
@@ -671,6 +804,16 @@ class Gateway:
         rec.update(kw)
         row = dict(rec)
         row["attempts"] = json.dumps(rec["attempts"])
+        if row["release"]:
+            # a release deleted (or deleted and recreated) while this request was in flight:
+            # the call is kept as spend, but under the deleted name, as the delete itself does
+            with self.store.lock:
+                if self.releases.epoch.get(row["release"], 0) != rec.get("_epoch", 0):
+                    row["release"] = f"{row['release']}~deleted"
+                return self._insert(row, rec)
+        return self._insert(row, rec)
+
+    def _insert(self, row: dict, rec: dict) -> dict:
         row["redactions"] = json.dumps(rec["redactions"])
         row["cached"] = int(rec["cached"])
         self.store.run(

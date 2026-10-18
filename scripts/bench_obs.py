@@ -11,7 +11,8 @@ the FastAPI TestClient: no server, no network, no GPU.
 
 Measured: GET /api/obs and GET /api/routing (median of --reps calls), then chat p50/p95 over
 --chats sequential /v1/chat/completions requests, first alone and then while another thread
-requests /api/obs back to back (does an admin refresh stall live traffic?).
+requests /api/obs back to back (does an admin refresh stall live traffic?), and again while it
+requests the CSV export (up to 100,000 rows) back to back.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from llm_control_room.app import create_app  # noqa: E402
 from llm_control_room.core import demo_key  # noqa: E402
 from llm_control_room.gateway import Gateway  # noqa: E402
 
+EXPORT = "/api/export/calls.csv?hours=24&include_simulated=true"
 TENANTS = ("acme", "globex", "initech", "bench")
 SCENARIOS = (
     ("normal-day", 1500),
@@ -136,22 +138,29 @@ def bench(n: int, reps: int, k: int, check: bool = False) -> dict:
         same = verify(app, c) if check else "not checked"
         alone = chats(c, k, "a")
 
-        stop, during, obs_done = threading.Event(), [], []
+        def under(path: str, tag: str) -> tuple[list[float], float, int]:
+            """Chats while another thread requests ``path`` back to back."""
+            stop, done = threading.Event(), []
 
-        def hammer():
-            c2 = TestClient(app, base_url="http://localhost")
-            while not stop.is_set():
-                obs_done.append(timed(c2, "/api/obs"))
+            def hammer():
+                c2 = TestClient(app, base_url="http://localhost")
+                while not stop.is_set():
+                    done.append(timed(c2, path))
 
-        th = threading.Thread(target=hammer)
-        th.start()
-        time.sleep(0.2)
-        t = time.perf_counter()
-        loaded = chats(c, k, "b")
-        wall = time.perf_counter() - t
-        stop.set()
-        th.join()
-        during = obs_done
+            th = threading.Thread(target=hammer)
+            th.start()
+            time.sleep(0.2)
+            t = time.perf_counter()
+            out = chats(c, k, tag)
+            wall = time.perf_counter() - t
+            stop.set()
+            th.join()
+            return out, wall, len(done)
+
+        loaded, wall, n_obs = under("/api/obs", "b")
+        exported, _, n_exp = under(EXPORT, "c")
+        export_ms = statistics.median(timed(c, EXPORT) for _ in range(max(1, reps // 2)))
+        export_rows = len(c.get(EXPORT).text.splitlines()) - 1
         return {
             "n": rows,
             "pool": pool,
@@ -164,7 +173,13 @@ def bench(n: int, reps: int, k: int, check: bool = False) -> dict:
             "chat_p95_obs": round(pct(loaded, 95), 1),
             "chat_max_obs": round(max(loaded), 1),
             "chat_rps_obs": round(k / wall, 1),
-            "obs_during": len(during),
+            "obs_during": n_obs,
+            "export_ms": round(export_ms, 1),
+            "export_rows": export_rows,
+            "chat_p50_export": round(pct(exported, 50), 1),
+            "chat_p95_export": round(pct(exported, 95), 1),
+            "chat_max_export": round(max(exported), 1),
+            "exports_during": n_exp,
             "same": same,
         }
     finally:
@@ -195,6 +210,12 @@ def main() -> int:
         "chat_max_obs",
         "chat_rps_obs",
         "obs_during",
+        "export_ms",
+        "export_rows",
+        "chat_p50_export",
+        "chat_p95_export",
+        "chat_max_export",
+        "exports_during",
     )
     print(" | ".join(cols))
     for n in a.n:

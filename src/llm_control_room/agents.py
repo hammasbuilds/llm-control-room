@@ -102,21 +102,50 @@ _OPS = {
 }
 
 
+CALC_MAX = 1e100  # largest magnitude any step of a calculation may reach
+CALC_CHARS = 500
+
+
 def calc(expr: str) -> float:
+    """Arithmetic only. Every intermediate value stays within CALC_MAX, and a power is checked
+    by its size before it is computed: ((9**64)**64)**64... used to hold the interpreter for
+    minutes building a number with hundreds of millions of digits."""
+
+    def big(v) -> bool:
+        return abs(v) > CALC_MAX or not math.isfinite(v)
+
     def ev(n):
-        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(
+            n.value, bool
+        ):
+            if big(n.value):
+                raise ToolError("number too large")
             return n.value
         if isinstance(n, ast.BinOp) and type(n.op) in _OPS:
-            if isinstance(n.op, ast.Pow) and abs(ev(n.right)) > 64:
-                raise ToolError("exponent too large")
-            return _OPS[type(n.op)](ev(n.left), ev(n.right))
+            left, right = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Pow):
+                if abs(right) > 64:
+                    raise ToolError("exponent too large")
+                if left != 0 and right > 0 and right * math.log10(abs(left)) > 100:
+                    raise ToolError("result too large")
+            try:
+                out = _OPS[type(n.op)](left, right)
+            except OverflowError:
+                raise ToolError("result too large") from None
+            if isinstance(out, complex):
+                raise ToolError("the result is not a real number")
+            if big(out):
+                raise ToolError("result too large")
+            return out
         if isinstance(n, ast.UnaryOp) and type(n.op) in _OPS:
             return _OPS[type(n.op)](ev(n.operand))
         raise ToolError("only arithmetic is allowed")
 
+    if not isinstance(expr, str) or len(expr) > CALC_CHARS:
+        raise ToolError(f"the expression must be text of at most {CALC_CHARS} characters")
     try:
         return ev(ast.parse(expr, mode="eval").body)
-    except (SyntaxError, ZeroDivisionError) as exc:
+    except (SyntaxError, ZeroDivisionError, RecursionError, ValueError) as exc:
         raise ToolError(f"bad expression: {exc}") from exc
 
 
@@ -382,6 +411,7 @@ LIMIT_CAPS = {
     "max_tool_calls": 200,
     "max_repeats": 50,
 }
+INT_LIMITS = ("max_steps", "max_tool_calls", "max_repeats")
 MAX_RUNNING = 8  # agent threads alive at once
 THINK_TOKENS = 60  # completion cap of one reasoning call
 ANSWER_TOKENS = 200  # completion cap of the composed final answer
@@ -443,9 +473,14 @@ class AgentRunner:
         for k in merged:
             if k not in DEFAULT_LIMITS:
                 raise ValueError(f"unknown limit {k!r}")
+            if isinstance(merged[k], bool):
+                raise ValueError(f"{k} must be a number")
             v = float(merged[k])
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f"{k} must be a positive number")
+            # a count limit of 0.5 used to be accepted, shown as 0.5 and applied as int(0.5) = 0
+            if k in INT_LIMITS and v != int(v):
+                raise ValueError(f"{k} must be a whole number")
             if v > LIMIT_CAPS[k]:
                 raise ValueError(f"{k} may not exceed {LIMIT_CAPS[k]:g}")
         self.threads = {k: t for k, t in self.threads.items() if t.is_alive()}

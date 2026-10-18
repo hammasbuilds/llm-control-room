@@ -22,16 +22,18 @@ from . import inputs, obs, sandbox
 from .core import DEMO_TENANTS, Core, demo_key
 from .gateway import MAX_CHARS, GatewayError, GatewayRequest
 from .providers import ProviderSet
-from .releases import ReleaseError
+from .releases import ReleaseError, ReleaseNotFound
 from .simulator import SCENARIOS as SIM_SCENARIOS
 from .simulator import Simulator
 from .store import Store
-from .tenants import NAME_RE, TenantError
+from .tenants import NAME_RE, NotFoundError, TenantError
 
 STATIC = Path(__file__).parent / "static"
 VERSION = "0.2.0"
 MAX_BODY = 1_000_000  # bytes accepted on any request
 BATCH_CHUNK = 25  # prompts per /api/playground/batch request
+EXPORT_ROWS = 100_000  # newest calls in one CSV export
+EXPORT_CHUNK = 2_000  # rows read and sent per step of the export stream
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
@@ -135,6 +137,19 @@ class _TooLarge(Exception):
     pass
 
 
+def whole(value, default: int, name: str) -> int:
+    """A whole number from a JSON value (``None`` -> default). 512.0 is fine; 1.5, true, NaN and
+    "abc" are refused rather than silently turned into something else."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a whole number")
+    f = float(value)
+    if not math.isfinite(f) or f != int(f):
+        raise ValueError(f"{name} must be a whole number")
+    return int(f)
+
+
 def create_app(
     db_path: str | Path = ":memory:",
     providers: ProviderSet | None = None,
@@ -190,8 +205,14 @@ def create_app(
     async def _gw(_: Request, exc: GatewayError):
         return JSONResponse(exc.to_dict(), status_code=exc.status)
 
+    @app.exception_handler(NotFoundError)
+    @app.exception_handler(ReleaseNotFound)
+    async def _missing(_: Request, exc: Exception):
+        return JSONResponse({"error": {"code": "not_found", "message": str(exc)}}, status_code=404)
+
     @app.exception_handler(KeyError)
     @app.exception_handler(TypeError)
+    @app.exception_handler(OverflowError)
     @app.exception_handler(ReleaseError)
     @app.exception_handler(TenantError)
     @app.exception_handler(ValueError)
@@ -224,10 +245,13 @@ def create_app(
 
     def _auth(request: Request, authorization: str) -> str:
         who = client_of(request)
-        if fails.blocked(who):
-            raise GatewayError(429, "too_many_failures", "too many invalid API keys; wait a minute")
         key = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
         tenant = core.tenants.authenticate(key) if key else None
+        # Every app on this machine calls from the same address, so the throttle stops guessing
+        # without stopping work: a valid key always gets through (keys are 128 random bits, so
+        # the throttle was never what protects them), and only invalid ones are refused with 429.
+        if not tenant and fails.blocked(who):
+            raise GatewayError(429, "too_many_failures", "too many invalid API keys; wait a minute")
         if not tenant:
             fails.fail(who)
             raise GatewayError(
@@ -281,7 +305,7 @@ def create_app(
                 tenant=tenant,
                 messages=body.get("messages") or [],
                 model=model,
-                max_tokens=int(body.get("max_tokens") or 512),
+                max_tokens=whole(body.get("max_tokens"), 512, "max_tokens"),
                 temperature=float(body.get("temperature") or 0),
                 feature=x_lcr_feature or str(ext.get("feature") or "default"),
                 context=ext.get("context") or "",
@@ -606,7 +630,7 @@ def create_app(
             raise ValueError("kind must be deny or redact")
         t = core.tenants.get(name)
         if t is None:
-            raise TenantError(f"no tenant {name!r}")
+            raise NotFoundError(f"no tenant {name!r}")
         res = parsed("terms", b)
         before = list(t[kind])
         if b.get("mode") == "replace":
@@ -679,14 +703,33 @@ def create_app(
             q = q.replace(" AND source!='sim'", "")
         if tenant:
             q, a = q + " AND tenant=?", a + [tenant]
-        rows = store.all(q + " ORDER BY id DESC LIMIT 100000", a)
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(cols)
-        for r in rows:
-            w.writerow([_cell(r[c]) for c in cols])
+        q += f" ORDER BY id DESC LIMIT {EXPORT_ROWS}"
+
+        def chunks():
+            # a read connection, one snapshot, a few thousand rows at a time: the gateway's writer
+            # lock is never held, so live traffic goes on while 100,000 rows are written out
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(cols)
+            with store.reader() as con:
+                cur = con.execute(q, a)
+                while True:
+                    batch = cur.fetchmany(EXPORT_CHUNK)
+                    if not batch:
+                        break
+                    for r in batch:
+                        w.writerow([_cell(r[c]) for c in cols])
+                    yield buf.getvalue()
+                    buf.seek(0)
+                    buf.truncate()
+            if buf.tell():
+                yield buf.getvalue()
+
+        # an in-memory database has only the locked main connection, and a lock taken on one
+        # worker thread cannot be released on another, so there the rows are read in one go
+        body = iter(list(chunks())) if store.path == ":memory:" else chunks()
         return StreamingResponse(
-            iter([buf.getvalue()]),
+            body,
             media_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="llm-control-room-calls.csv"'},
         )

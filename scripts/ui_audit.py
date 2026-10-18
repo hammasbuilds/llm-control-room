@@ -162,11 +162,14 @@ SURFACED_JS = r"""
 
 
 def free_port() -> int:
-    for port in (p for p in range(8800, 8900) if not 8841 <= p <= 8846):  # 8841-8846 are reserved
+    # LCR_PORT_RANGE=8880-8889 keeps the audit inside a range of the caller's choosing
+    lo, _, hi = os.environ.get("LCR_PORT_RANGE", "8800-8899").partition("-")
+    lo, hi = int(lo), int(hi or lo)
+    for port in (p for p in range(lo, hi + 1) if not 8841 <= p <= 8846):  # 8841-8846 are reserved
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
-    raise SystemExit("no free port in 8800-8899")
+    raise SystemExit(f"no free port in {lo}-{hi}")
 
 
 class Server:
@@ -178,7 +181,8 @@ class Server:
         self.proc = subprocess.Popen(
             [sys.executable, "-c", LAUNCH, "--no-browser", "--port", str(port), "--db",
              str(self.home / "a.sqlite3")], env=env, cwd=ROOT,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         self.base = f"http://127.0.0.1:{port}"
         for _ in range(120):
             try:

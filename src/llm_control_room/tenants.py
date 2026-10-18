@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import secrets
 import time
@@ -25,8 +26,15 @@ FIELDS = (
 )
 
 
+MAX_RPM = 1_000_000_000  # fits SQLite's INTEGER and any real rate
+
+
 class TenantError(ValueError):
     pass
+
+
+class NotFoundError(TenantError):
+    """The named tenant or key does not exist (HTTP 404, not 400)."""
 
 
 def hash_key(key: str) -> str:
@@ -49,14 +57,23 @@ def _validate(p: dict) -> dict:
     for k, v in p.items():
         if k not in FIELDS:
             continue
+        if isinstance(v, bool) and k in ("budget_usd", "budget_window_s", "min_quality", "rpm"):
+            raise TenantError(f"{k} must be a number, not true/false")
         if k in ("budget_usd", "budget_window_s", "min_quality"):
             v = float(v)
+            # NaN passes every comparison and SQLite stores it as NULL; infinity cannot be sent
+            # back as JSON: either one written here would break the tenants page for good
+            if not math.isfinite(v):
+                raise TenantError(f"{k} must be a finite number")
             if v < 0 or (k == "min_quality" and v > 1) or (k == "budget_window_s" and v <= 0):
                 raise TenantError(f"{k} out of range")
         elif k == "rpm":
-            v = int(v)
-            if v < 1:
-                raise TenantError("rpm must be at least 1")
+            f = float(v)
+            if not math.isfinite(f) or f != int(f):
+                raise TenantError("rpm must be a whole number")
+            v = int(f)
+            if not 1 <= v <= MAX_RPM:
+                raise TenantError(f"rpm must be between 1 and {MAX_RPM:,}")
         elif k in ("allowed_models", "fallbacks"):
             if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                 raise TenantError(f"{k} must be a list of model ids")
@@ -105,7 +122,7 @@ class Tenants:
 
     def update(self, name: str, **policy) -> dict:
         if not self.get(name):
-            raise TenantError(f"no tenant {name!r}")
+            raise NotFoundError(f"no tenant {name!r}")
         vals = _validate(policy)
         if vals:
             sets = ",".join(f"{k}=?" for k in vals)
@@ -114,6 +131,8 @@ class Tenants:
         return self.get(name)
 
     def delete(self, name: str) -> None:
+        if not self.get(name):
+            raise NotFoundError(f"no tenant {name!r}")
         with self.store.transaction():
             self.store.run("DELETE FROM tenants WHERE name=?", (name,))
             self.store.run("DELETE FROM api_keys WHERE tenant=?", (name,))
@@ -131,7 +150,7 @@ class Tenants:
 
     def add_key(self, tenant: str, label: str = "", *, key: str | None = None) -> dict:
         if not self.get(tenant):
-            raise TenantError(f"no tenant {tenant!r}")
+            raise NotFoundError(f"no tenant {tenant!r}")
         key = key or "lcr-" + secrets.token_hex(16)
         kid = self.store.run(
             "INSERT INTO api_keys(tenant, key_hash, prefix, label, created) VALUES(?,?,?,?,?)",
@@ -147,7 +166,13 @@ class Tenants:
         )
 
     def revoke(self, key_id: int) -> None:
+        if not self.store.one("SELECT 1 FROM api_keys WHERE id=?", (key_id,)):
+            raise NotFoundError(f"no key with id {key_id}")
         self.store.run("UPDATE api_keys SET revoked=1 WHERE id=?", (key_id,))
+
+    def has_key(self, key: str) -> bool:
+        """Whether this exact key was ever issued, revoked or not."""
+        return self.store.one("SELECT 1 FROM api_keys WHERE key_hash=?", (hash_key(key),)) is not None
 
     def authenticate(self, key: str) -> str | None:
         r = self.store.one(

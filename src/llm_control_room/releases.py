@@ -38,6 +38,52 @@ class ReleaseError(ValueError):
     pass
 
 
+class ReleaseNotFound(ReleaseError):
+    """The named release or version does not exist (HTTP 404, not 400)."""
+
+
+# (lowest, highest, whole number) for every SLO field. A value outside these is refused when it is
+# written: NaN passes every comparison (the SLO would never fire), infinity cannot be sent back as
+# JSON (the releases page would fail for good), and a negative window broke serving itself.
+SLO_RANGES = {
+    "max_p95_ms": (1e-3, 3_600_000.0, False),
+    "max_error_rate": (0.0, 1.0, False),
+    "min_quality_rate": (0.0, 1.0, False),
+    "max_quality_drop": (0.0, 1.0, False),
+    "min_samples": (1, 10_000, True),
+    "window": (1, 10_000, True),
+}
+
+
+def validate_slo(slo, base: dict | None = None) -> dict:
+    """``base`` merged with the known fields of ``slo``, every value checked."""
+    if slo is None:
+        slo = {}
+    if not isinstance(slo, dict):
+        raise ReleaseError("slo must be an object of limits, e.g. {\"max_p95_ms\": 2000}")
+    out = dict(base or DEFAULT_SLO)
+    for k, v in slo.items():
+        if k not in SLO_RANGES:
+            continue
+        lo, hi, whole = SLO_RANGES[k]
+        if isinstance(v, bool):
+            raise ReleaseError(f"{k} must be a number")
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise ReleaseError(f"{k} must be a number, got {v!r}") from None
+        if not math.isfinite(f) or not lo <= f <= hi or (whole and f != int(f)):
+            kind = "a whole number" if whole else "a number"
+            raise ReleaseError(f"{k} must be {kind} from {lo:g} to {hi:g}")
+        out[k] = float(int(f)) if whole else f
+    if out["min_samples"] > out["window"]:
+        raise ReleaseError(
+            f"min_samples ({out['min_samples']:g}) cannot exceed window ({out['window']:g}): "
+            "the canary could never be judged"
+        )
+    return out
+
+
 def percentile(values: list[float], p: float) -> float:
     """Nearest rank: the smallest value with at least p% of the values at or below it."""
     if not values:
@@ -113,6 +159,9 @@ class Releases:
         self.health = ModelHealth()
         self.last_verdict: dict[str, str] = {}
         self.last_check: dict[str, dict] = {}
+        # bumped by every delete, so a call that was in flight when its release was deleted (and
+        # perhaps recreated under the same name) is recorded under the deleted name
+        self.epoch: dict[str, int] = {}
 
     # ------------------------------------------------------------------ CRUD
 
@@ -136,7 +185,7 @@ class Releases:
             raise ReleaseError("release name must be letters, digits, - or _")
         if self.store.one("SELECT 1 FROM releases WHERE name=?", (name,)):
             raise ReleaseError(f"release {name!r} already exists")
-        merged = {**DEFAULT_SLO, **(slo or {})}
+        merged = validate_slo(slo)
         self.store.run(
             "INSERT INTO releases(name, created, auto_rollback, slo) VALUES(?,?,?,?)",
             (name, self.clock(), int(auto_rollback), json.dumps(merged)),
@@ -150,11 +199,17 @@ class Releases:
         return self.get(name)
 
     def delete(self, name: str) -> None:
+        self._rel(name)
         with self.store.transaction():
             self.store.run("DELETE FROM versions WHERE release=?", (name,))
             self.store.run("DELETE FROM releases WHERE name=?", (name,))
             self.store.run("DELETE FROM release_events WHERE release=?", (name,))
-            self.store.run("DELETE FROM calls WHERE release=?", (name,))
+            # the calls were spend: they stay in every tenant's budget window and in chargeback,
+            # under a name nobody can create again, so a new release of this name starts clean
+            self.store.run(
+                "UPDATE calls SET release=? WHERE release=?", (f"{name}~deleted", name)
+            )
+            self.epoch[name] = self.epoch.get(name, 0) + 1
         for k in [k for k in self.windows if k[0] == name]:
             del self.windows[k]
         self.health.forget(f"{name}:")
@@ -180,7 +235,7 @@ class Releases:
     def _rel(self, name: str) -> dict:
         r = self.store.one("SELECT * FROM releases WHERE name=?", (name,))
         if not r:
-            raise ReleaseError(f"no release {name!r}")
+            raise ReleaseNotFound(f"no release {name!r}")
         r["slo"] = {**DEFAULT_SLO, **json.loads(r["slo"])}
         r["auto_rollback"] = bool(r["auto_rollback"])
         return r
@@ -188,7 +243,7 @@ class Releases:
     def version(self, name: str, v: int) -> dict:
         r = self.store.one("SELECT * FROM versions WHERE release=? AND version=?", (name, v))
         if not r:
-            raise ReleaseError(f"no version {v} in release {name!r}")
+            raise ReleaseNotFound(f"no version {v} in release {name!r}")
         return r
 
     def versions(self, name: str) -> list[dict]:
@@ -221,7 +276,7 @@ class Releases:
 
     def set_slo(self, name: str, slo: dict, auto_rollback: bool | None = None) -> dict:
         r = self._rel(name)
-        merged = {**r["slo"], **{k: float(v) for k, v in slo.items() if k in DEFAULT_SLO}}
+        merged = validate_slo(slo, r["slo"])
         self.store.run("UPDATE releases SET slo=? WHERE name=?", (json.dumps(merged), name))
         if auto_rollback is not None:
             self.store.run(
@@ -350,7 +405,11 @@ class Releases:
     def observe(self, name: str, v: int, o: Obs) -> None:
         w = self.windows.get((name, v))
         if w is None:
-            size = int(self._rel(name)["slo"]["window"])
+            try:
+                rel = self._rel(name)
+            except ReleaseNotFound:
+                return  # deleted while this request was in flight: the call itself was served
+            size = max(1, min(int(rel["slo"]["window"]), int(SLO_RANGES["window"][1])))
             w = self.windows[(name, v)] = Window(deque(maxlen=size))
         w.obs.append(o)
 
@@ -358,7 +417,10 @@ class Releases:
         return self.windows.get((name, v), Window()).stats()
 
     def check(self, name: str) -> dict:
-        out = self._check(name)
+        try:
+            out = self._check(name)
+        except ReleaseNotFound:
+            return {"verdict": "no_challenger"}  # deleted mid-request
         if out["verdict"] != "no_challenger":
             self.last_check[name] = out
         return out

@@ -387,11 +387,13 @@ def _run_code(code: str, profile: str, wall_seconds: float, output_bytes: int) -
     try:
         Path(work, "main.py").write_text(code, encoding="utf-8")
         kw: dict = {}
+        # -X utf8: the child's stdout is a pipe, which on Windows would otherwise use the ANSI
+        # code page, so print("中文") failed with UnicodeEncodeError (and -I ignores PYTHONUTF8)
         if kind == "subprocess":
-            cmd, env = [sys.executable, "main.py"], dict(os.environ)
+            cmd, env = [sys.executable, "-X", "utf8", "main.py"], dict(os.environ)
         elif kind == "restricted":
             Path(work, "boot.py").write_text(BOOT, encoding="utf-8")
-            cmd = [sys.executable, "-I", "-S", "boot.py"]
+            cmd = [sys.executable, "-I", "-S", "-X", "utf8", "boot.py"]
             env = {"TEMP": work, "TMP": work, "TMPDIR": work, "PATH": ""}
             if WIN:
                 env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
