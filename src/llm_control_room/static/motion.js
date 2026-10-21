@@ -93,8 +93,8 @@
       const ph = inp.getAttribute("placeholder");
       if (ph) w.classList.add("up"); else inp.setAttribute("placeholder", " ");
       if (inp.type === "number" || inp.value) w.classList.add("up");
-      lab.removeAttribute("for"); lab.style.display = "";
-      inp.style.minWidth = Math.max(inp.type === "number" ? 104 : 0, Math.ceil(lab.scrollWidth * 0.9 + 30)) + "px";
+      lab.style.display = ""; if (inp.id && !lab.htmlFor) lab.htmlFor = inp.id;
+      if (inp.type === "number") inp.style.minWidth = "104px"; // room for the value, the spinner and the tick
       const upd = () => {
         const filled = inp.value.trim() !== "";
         w.classList.toggle("ok", filled && inp.checkValidity());

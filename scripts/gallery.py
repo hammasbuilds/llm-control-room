@@ -53,7 +53,8 @@ LAUNCH = "from llm_control_room.launcher import main; main()"
 
 
 def free_port() -> int:
-    for port in (p for p in range(8800, 8900) if not 8841 <= p <= 8846):  # 8841-8846 are reserved
+    lo, _, hi = os.environ.get("LCR_PORT_RANGE", "8800-8899").partition("-")  # e.g. 8880-8889
+    for port in (p for p in range(int(lo), int(hi or lo) + 1) if not 8841 <= p <= 8846):  # 8841-8846 are reserved
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", port)) != 0:
                 return port
@@ -170,7 +171,7 @@ def run(base: str, token: str) -> None:
         go("tenants")
         page.fill("#nt-name", "support-desk")
         page.click("#nt-go")
-        page.wait_for_selector("#nt-out >> text=Key (shown only once)", timeout=10000)
+        page.wait_for_selector("#nt-out >> text=shown only once", timeout=10000)
         shot("07-tenants-create", "#nt-out")
 
         # 08 Tenants: import from a file (preview, then import)

@@ -3,16 +3,18 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const S = { meta: null, timers: [], token: localStorage.getItem("lcr-token") || "" };
+let storedToken = ""; try { storedToken = localStorage.getItem("lcr-token") || ""; } catch { /* storage blocked */ }
+const S = { meta: null, timers: [], token: storedToken };
+function keepToken(t) { S.token = t; try { localStorage.setItem("lcr-token", t); } catch { /* private mode: the token lives for this tab */ } }
 // The launcher opens the page as /#token=...: keep the token, then take it out of the address bar.
-{
+// Also on a later hash change, so pasting the launcher's address into an open tab signs it in.
+function takeTokenFromHash() {
   const m = /[#&]token=([^&]+)/.exec(location.hash);
-  if (m) {
-    S.token = decodeURIComponent(m[1]);
-    try { localStorage.setItem("lcr-token", S.token); } catch { /* private mode: the token lives for this tab */ }
-    history.replaceState(null, "", location.pathname + location.search + (location.hash.replace(/[#&]token=[^&]+/, "") || ""));
-  }
+  if (!m) return;
+  keepToken(decodeURIComponent(m[1]));
+  history.replaceState(null, "", location.pathname + location.search + (location.hash.replace(/[#&]token=[^&]+/, "") || ""));
 }
+takeTokenFromHash();
 const UNSAFE = "The subprocess profile runs this code with YOUR files, environment and network. Run it anyway?";
 const COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
 const MODEL_COLOR = {};
@@ -25,9 +27,10 @@ async function api(path, method = "GET", body) {
   });
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (r.status === 401 && path.startsWith("/api/") && S.meta?.admin_token_required !== false) {
-    const t = prompt("This control room needs an admin token (LCR_ADMIN_TOKEN):");
-    if (t) { S.token = t; localStorage.setItem("lcr-token", t); return api(path, method, body); }
+  if (r.status === 401 && path.startsWith("/api/")) {
+    // never a browser prompt: the page itself says where the token is and why it is needed
+    showSignIn(Boolean(S.token));
+    const e = new Error("Sign in with the admin token to continue (see the sign-in box)."); e.status = 401; e.signin = true; throw e;
   }
   if (!r.ok) {
     const e = new Error(data?.error?.message || data?.detail || `HTTP ${r.status}`);
@@ -43,9 +46,26 @@ function toast(msg, err = false) {
   if (window.lcrFlash) window.lcrFlash(err ? "err" : "ok");
   setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 220); }, err ? 6000 : 3000);
 }
-const guard = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { toast(e.message, true); } };
+const guard = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { if (!e.signin) toast(e.message, true); } };
+
+// ---------- sign-in: shown in the page when the admin API answers 401
+function showSignIn(wrong) {
+  S.timers.forEach(clearInterval); S.timers = [];
+  const main = $("#main"); if (!main || $("#signin", main)) return;
+  main.innerHTML = `<div class="card signin" id="signin" style="max-width:720px"><h1>Sign in to this control room</h1>
+    <p>The admin pages are protected by a token, so no other program on this computer can change your tenants, keys or budgets. Starting it with <code>uv run llm-control-room</code> or <code>run.bat</code> opens this page already signed in.</p>
+    <p><b>Opened the address yourself?</b> Paste the token from the file <code>admin-token</code> in the data folder:</p>
+    <ul><li>Windows: <code>%USERPROFILE%\\.llm-control-room\\admin-token</code></li><li>macOS and Linux: <code>~/.llm-control-room/admin-token</code></li>
+    <li>If you moved the data with <code>LCR_HOME</code> or <code>--db</code>, the file sits next to the database. If you set <code>LCR_ADMIN_TOKEN</code>, paste that value.</li></ul>
+    ${wrong ? `<div class="issues err" role="alert"><b>That token was not accepted.</b> Copy it again from the file above (the whole line, no spaces), or restart with the launcher.</div>` : ""}
+    <form id="signin-form" class="row" style="margin-top:10px"><div style="flex:1 1 320px"><label for="signin-token">Admin token</label><input id="signin-token" type="password" autocomplete="off" style="width:100%" required></div><button class="primary" type="submit">Sign in</button></form>
+    <p class="sub" style="margin-top:12px">Your apps never need this token: they call <code>/v1/chat/completions</code> with a tenant API key from <b>Tenants and keys</b>.</p></div>`;
+  $("#signin-form").onsubmit = (ev) => { ev.preventDefault(); const t = $("#signin-token").value.trim(); if (!t) return; keepToken(t); main.innerHTML = `<div class="empty">Signing in...</div>`; route(); };
+  $("#signin-token").focus();
+}
 
 // ---------- formatting
+const axisUsd = (v) => (v === 0 ? "$0" : v >= 0.01 ? "$" + v.toFixed(2) : "$" + Number(v.toPrecision(2)));
 const usd = (v, d = 4) => (v == null ? "-" : "$" + Number(v).toFixed(Math.abs(v) < 0.01 && v !== 0 ? 6 : d));
 const pct = (v, d = 1) => (v == null ? "-" : (v * 100).toFixed(d) + "%");
 const ms = (v) => (v == null ? "-" : Number(v) >= 1000 ? (v / 1000).toFixed(2) + " s" : Math.round(v) + " ms");
@@ -55,66 +75,87 @@ const hhmm = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit",
 
 // ---------- components
 function tiles(items) {
-  return `<div class="tiles">${items.map((t) => `<div class="tile"><div class="k">${esc(t.k)}</div><div class="v">${t.v}</div>${t.d ? `<div class="d">${t.d}</div>` : ""}</div>`).join("")}</div>`;
+  // whole rows only: up to five tiles in one row, more in two equal rows (never a lone tile below)
+  const n = items.length, cols = n <= 5 ? n : Math.ceil(n / 2);
+  return `<div class="tiles" style="--cols:${cols}">${items.map((t) => `<div class="tile"><div class="k">${esc(t.k)}</div><div class="v">${t.v}</div>${t.d ? `<div class="d">${t.d}</div>` : ""}</div>`).join("")}</div>`;
 }
 function bars(items, fmt = (v) => v, color) {
   const max = Math.max(...items.map((i) => i.value), 1e-12);
   if (!items.length) return `<div class="empty">No data yet</div>`;
   return `<div class="bars">${items.map((i) => `<div class="b"><span class="l" title="${esc(i.label)}">${esc(i.label)}</span><span class="t"><i style="width:${Math.max(1, (i.value / max) * 100)}%;background:${i.color || color || "var(--c1)"}"></i></span><span class="x">${fmt(i.value)}${i.sub ? " " + esc(i.sub) : ""}</span></div>`).join("")}</div>`;
 }
-function lineChart(series, { h = 170, fmt = (v) => v, labels = [] } = {}) {
-  const W = 640, pad = { l: 46, r: 10, t: 8, b: 22 };
-  const n = Math.max(...series.map((s) => s.values.length), 1);
-  const max = Math.max(...series.flatMap((s) => s.values.map((v) => v ?? 0)), 1e-12) * 1.08;
-  const X = (i) => pad.l + (n === 1 ? 0 : (i / (n - 1)) * (W - pad.l - pad.r));
-  const Y = (v) => pad.t + (1 - v / max) * (h - pad.t - pad.b);
-  let g = "";
-  for (let k = 0; k <= 3; k++) { const y = pad.t + (k / 3) * (h - pad.t - pad.b); g += `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}"/><text x="${pad.l - 6}" y="${y + 4}" text-anchor="end">${esc(fmt(max * (1 - k / 3)))}</text>`; }
-  [0, Math.floor((n - 1) / 2), n - 1].forEach((i) => { if (labels[i] != null) g += `<text x="${X(i)}" y="${h - 6}" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${esc(labels[i])}</text>`; });
-  const paths = series.map((s, si) => {
-    const pts = s.values.map((v, i) => [X(i), Y(v ?? 0)]);
-    const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-    const dots = pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="5" fill="transparent"><title>${esc(s.name)} ${esc(labels[i] ?? i)}: ${esc(fmt(s.values[i] ?? 0))}</title></circle>`).join("");
-    return `<path d="${d}" fill="none" stroke="${s.color || COLORS[si]}" stroke-width="2" stroke-linejoin="round"/>${dots}`;
-  }).join("");
-  const legend = series.length > 1 ? `<div class="legend">${series.map((s, i) => `<span><i style="background:${s.color || COLORS[i]}"></i>${esc(s.name)}</span>`).join("")}</div>` : "";
-  return `<svg viewBox="0 0 ${W} ${h}" width="100%" role="img" aria-label="${esc(series.map((s) => s.name).join(", "))}">${g}${paths}</svg>${legend}`;
+// Charts are drawn at the width they are shown at, so their 11px labels stay 11px on a phone and
+// on a wide card alike (a fixed viewBox scaled the text down to 5px or up to 20px).
+const CHARTS = [];
+const chartSlot = (kind, args) => { CHARTS.push({ kind, args }); return `<div class="chart" data-chart="${CHARTS.length - 1}"></div>`; };
+function drawCharts(root = document) {
+  $$(".chart[data-chart]", root).forEach((el) => {
+    const c = CHARTS[+el.dataset.chart]; if (!c) return;
+    const w = Math.max(240, Math.round(el.clientWidth || 640));
+    if (+el.dataset.w === w) return;
+    el.dataset.w = w; el.innerHTML = DRAW[c.kind](...c.args, w);
+  });
 }
-function scatter(points, { w = 640, h = 280 } = {}) {
-  const pad = { l: 54, r: 14, t: 10, b: 36 };
-  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
-  const x1 = Math.max(...xs) * 1.1 || 1, y0 = Math.min(...ys) - 0.03, y1 = Math.max(...ys) + 0.03;
-  const X = (v) => pad.l + (v / x1) * (w - pad.l - pad.r), Y = (v) => pad.t + (1 - (v - y0) / (y1 - y0)) * (h - pad.t - pad.b);
-  let g = "";
-  for (let k = 0; k <= 4; k++) { const v = y0 + ((y1 - y0) * k) / 4; g += `<line class="grid" x1="${pad.l}" x2="${w - pad.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${pad.l - 6}" y="${Y(v) + 4}" text-anchor="end">${(v * 100).toFixed(0)}%</text>`; }
-  for (let k = 0; k <= 4; k++) { const v = (x1 * k) / 4; g += `<text x="${X(v)}" y="${h - 18}" text-anchor="${k === 4 ? "end" : "middle"}">${usd(v, 2)}</text>`; }
-  g += `<text x="${w / 2}" y="${h - 3}" text-anchor="middle">total cost of the recorded traffic</text>`;
-  const merged = [];
-  points.forEach((p) => { const m = merged.find((q) => q.x === p.x && q.y === p.y); if (m) m.name += " / " + p.name.replace("router @ quality ", ""); else merged.push({ ...p }); });
-  // labels that would print on top of each other (two strategies at nearly the same point) are
-  // pushed down a line until they clear every label already placed
-  // every dot is an obstacle, and labels already placed are too
-  const placed = merged.map((p) => ({ x0: X(p.x) - 8, x1: X(p.x) + 8, y: Y(p.y) + 4 }));
-  const circles = merged.map((p) => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${p.kind === "router" ? 7 : 5}" fill="${p.kind === "router" ? "var(--c1)" : "var(--c6)"}" stroke="var(--panel)" stroke-width="1.5"><title>${esc(p.name)}: ${usd(p.x)} at ${pct(p.y)} expected success</title></circle>`).join("");
-  const labels = merged.map((p) => { const cx = X(p.x), cy = Y(p.y), right = cx > w - 120, label = p.name.replace("always ", "").replace("router @ quality ", "r@");
-    const lw = label.length * 6.2, x0 = right ? cx - 9 - lw : cx + 9;
-    let ly = cy + 4; while (placed.some((b) => Math.abs(b.y - ly) < 12 && x0 < b.x1 && x0 + lw > b.x0)) ly += 12;
-    placed.push({ x0, x1: x0 + lw, y: ly });
-    return `<text x="${right ? cx - 9 : cx + 9}" y="${ly}" text-anchor="${right ? "end" : "start"}">${esc(label)}</text>`; }).join("");
-  const dots = circles + labels;
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="cost against expected success">${g}${dots}</svg><div class="legend"><span><i style="background:var(--c6)"></i>always one model</span><span><i style="background:var(--c1)"></i>router at a quality threshold (r@0.8)</span></div>`;
-}
-function groupedBars(labels, a, b, { aName = "reference", bName = "current" } = {}) {
-  const W = 420, n = labels.length || 1;
-  // many categories: slant the labels so neighbours never print on top of each other, and leave
-  // room on the left for the first slanted label
-  const slant = (W - 22) / n < 52, pad = slant ? 58 : 22, bw = (W - pad) / n, foot = slant ? 58 : 18, H = 112 + foot;
-  const max = Math.max(...a, ...b, 0.01) * 1.1;
-  const bs = labels.map((l, i) => { const x = pad + i * bw, ha = (a[i] / max) * (H - foot - 12), hb = (b[i] / max) * (H - foot - 12), cx = x + bw / 2, ty = H - foot + 12;
-    const label = slant ? `<text x="${cx}" y="${ty}" text-anchor="end" transform="rotate(-40 ${cx} ${ty})">${esc(String(l).length > 12 ? String(l).slice(0, 11) + "…" : l)}<title>${esc(l)}</title></text>` : `<text x="${cx}" y="${H - 5}" text-anchor="middle">${esc(String(l).length > 9 ? String(l).slice(0, 8) + "…" : l)}<title>${esc(l)}</title></text>`;
-    return `<rect x="${x + bw * 0.1}" y="${H - foot - ha}" width="${bw * 0.37}" height="${ha}" fill="var(--c6)"><title>${esc(aName)} ${esc(l)}: ${pct(a[i])}</title></rect><rect x="${x + bw * 0.5}" y="${H - foot - hb}" width="${bw * 0.37}" height="${hb}" fill="var(--c1)"><title>${esc(bName)} ${esc(l)}: ${pct(b[i])}</title></rect>${label}`; }).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="distribution before and after">${bs}</svg>`;
-}
+let resizeT = 0; window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => drawCharts(), 120); });
+const CH = 6.7; // width of one 11px mono character
+const lineChart = (series, opts = {}) => chartSlot("line", [series, opts]);
+const scatter = (points, opts = {}) => chartSlot("scatter", [points, opts]);
+const groupedBars = (labels, a, b, opts = {}) => chartSlot("gbars", [labels, a, b, opts]);
+const DRAW = {
+  line(series, { h = 170, fmt = (v) => v, labels = [], floor = 1e-12 } = {}, W = 640) {
+    const n = Math.max(...series.map((s) => s.values.length), 1);
+    const max = Math.max(Math.max(...series.flatMap((s) => s.values.map((v) => v ?? 0))) * 1.08, floor);
+    const ticks = [0, 1, 2, 3].map((k) => String(fmt(max * (1 - k / 3))));
+    const pad = { l: Math.max(...ticks.map((t) => t.length)) * CH + 12, r: 10, t: 8, b: 22 };
+    const X = (i) => pad.l + (n === 1 ? 0 : (i / (n - 1)) * (W - pad.l - pad.r));
+    const Y = (v) => pad.t + (1 - v / max) * (h - pad.t - pad.b);
+    let g = "";
+    ticks.forEach((t, k) => { const y = pad.t + (k / 3) * (h - pad.t - pad.b); g += `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}"/><text x="${pad.l - 6}" y="${y + 4}" text-anchor="end">${esc(t)}</text>`; });
+    [0, Math.floor((n - 1) / 2), n - 1].forEach((i) => { if (labels[i] != null) g += `<text x="${X(i)}" y="${h - 6}" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${esc(labels[i])}</text>`; });
+    const paths = series.map((s, si) => {
+      const pts = s.values.map((v, i) => [X(i), Y(v ?? 0)]);
+      const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+      const dots = pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="5" fill="transparent"><title>${esc(s.name)} ${esc(labels[i] ?? i)}: ${esc(fmt(s.values[i] ?? 0))}</title></circle>`).join("");
+      return `<path d="${d}" fill="none" stroke="${s.color || COLORS[si]}" stroke-width="2" stroke-linejoin="round"/>${dots}`;
+    }).join("");
+    const legend = series.length > 1 ? `<div class="legend">${series.map((s, i) => `<span><i style="background:${s.color || COLORS[i]}"></i>${esc(s.name)}</span>`).join("")}</div>` : "";
+    return `<svg viewBox="0 0 ${W} ${h}" width="${W}" height="${h}" role="img" aria-label="${esc(series.map((s) => s.name).join(", "))}">${g}${paths}</svg>${legend}`;
+  },
+  scatter(points, { h = 280 } = {}, w = 640) {
+    const pad = { l: 46, r: 14, t: 10, b: 38 };
+    const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+    const x1 = Math.max(...xs) * 1.1 || 1, y0 = Math.min(...ys) - 0.03, y1 = Math.max(...ys) + 0.03;
+    const X = (v) => pad.l + (v / x1) * (w - pad.l - pad.r), Y = (v) => pad.t + (1 - (v - y0) / (y1 - y0)) * (h - pad.t - pad.b);
+    let g = "";
+    for (let k = 0; k <= 4; k++) { const v = y0 + ((y1 - y0) * k) / 4; g += `<line class="grid" x1="${pad.l}" x2="${w - pad.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${pad.l - 6}" y="${Y(v) + 4}" text-anchor="end">${(v * 100).toFixed(0)}%</text>`; }
+    const xt = w < 420 ? 2 : 4;
+    for (let k = 0; k <= xt; k++) { const v = (x1 * k) / xt; g += `<text x="${X(v)}" y="${h - 20}" text-anchor="${k === xt ? "end" : k === 0 ? "start" : "middle"}">${usd(v, 2)}</text>`; }
+    g += `<text x="${w / 2}" y="${h - 4}" text-anchor="middle">total cost of the recorded traffic</text>`;
+    const merged = [];
+    points.forEach((p) => { const m = merged.find((q) => q.x === p.x && q.y === p.y); if (m) m.name += " / " + p.name.replace("router @ quality ", ""); else merged.push({ ...p }); });
+    // every dot is an obstacle, and labels already placed are too: a label that would print on top
+    // of another is pushed down a line until it clears them
+    const placed = merged.map((p) => ({ x0: X(p.x) - 8, x1: X(p.x) + 8, y: Y(p.y) + 4 }));
+    const circles = merged.map((p) => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${p.kind === "router" ? 7 : 5}" fill="${p.kind === "router" ? "var(--c1)" : "var(--c6)"}" stroke="var(--panel)" stroke-width="1.5"><title>${esc(p.name)}: ${usd(p.x)} at ${pct(p.y)} expected success</title></circle>`).join("");
+    const labels = merged.map((p) => { const cx = X(p.x), cy = Y(p.y), label = p.name.replace("always ", "").replace("router @ quality ", "r@");
+      const lw = label.length * CH, right = cx + 9 + lw > w - 4, x0 = right ? cx - 9 - lw : cx + 9;
+      let ly = cy + 4; while (placed.some((b) => Math.abs(b.y - ly) < 13 && x0 < b.x1 && x0 + lw > b.x0)) ly += 13;
+      placed.push({ x0, x1: x0 + lw, y: ly });
+      return `<text x="${right ? cx - 9 : cx + 9}" y="${ly}" text-anchor="${right ? "end" : "start"}">${esc(label)}</text>`; }).join("");
+    return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="cost against expected success">${g}${circles}${labels}</svg><div class="legend"><span><i style="background:var(--c6)"></i>always one model</span><span><i style="background:var(--c1)"></i>router at a quality threshold (r@0.8 = only models with quality 0.8 or more)</span></div>`;
+  },
+  gbars(labels, a, b, { aName = "reference", bName = "current" } = {}, W = 420) {
+    const n = labels.length || 1;
+    // many categories: slant the labels so neighbours never print on top of each other, and leave
+    // room on the left for the first slanted label
+    const slant = (W - 22) / n < 70, pad = slant ? 70 : 22, bw = (W - pad) / n, foot = slant ? 74 : 20, H = 120 + foot;
+    const max = Math.max(...a, ...b, 0.01) * 1.1;
+    const bs = labels.map((l, i) => { const x = pad + i * bw, ha = (a[i] / max) * (H - foot - 12), hb = (b[i] / max) * (H - foot - 12), cx = x + bw / 2, ty = H - foot + 14;
+      const s = String(l), label = slant ? `<text x="${cx}" y="${ty}" text-anchor="end" transform="rotate(-40 ${cx} ${ty})">${esc(s.length > 13 ? s.slice(0, 12) + "…" : s)}<title>${esc(s)}</title></text>` : `<text x="${cx}" y="${H - 5}" text-anchor="middle">${esc(s.length > 10 ? s.slice(0, 9) + "…" : s)}<title>${esc(s)}</title></text>`;
+      return `<rect x="${x + bw * 0.1}" y="${H - foot - ha}" width="${bw * 0.37}" height="${ha}" fill="var(--c6)"><title>${esc(aName)} ${esc(s)}: ${pct(a[i])}</title></rect><rect x="${x + bw * 0.5}" y="${H - foot - hb}" width="${bw * 0.37}" height="${hb}" fill="var(--c1)"><title>${esc(bName)} ${esc(s)}: ${pct(b[i])}</title></rect>${label}`; }).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="distribution before and after">${bs}</svg>`;
+  },
+};
 // An event's detail as readable "key: value" lines that wrap, never a clipped JSON string.
 function detailHtml(v) {
   if (v == null || v === "") return "-";
@@ -129,6 +170,8 @@ const failBox = (e) => `<div class="issues err" style="margin-top:8px"><b>${e.st
 const clip = (t, n) => { t = String(t ?? ""); if (t.length <= n) return t; const cut = t.slice(0, n); const sp = cut.lastIndexOf(" "); return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,;:([{]+$/, "") + "…"; };
 // a table cell that has nothing to show says so, rather than staying blank
 const orDash = (html) => (String(html).trim() ? html : `<span class="sub">-</span>`);
+// the one curl command the UI shows, for a given key (Playground and a newly created key)
+const curlText = (key) => `curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'`;
 const chip = (t, kind = "") => `<span class="chip ${kind}">${esc(t)}</span>`;
 const statusChip = (s) => chip(s.replace(/_/g, " "), { completed: "good", running: "info", awaiting_approval: "warn", budget_stopped: "bad", failed: "bad", denied: "warn", cancelled: "", interrupted: "" }[s] || "");
 const header = (title, sub, extra = "") => `<div class="top"><div><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div>${extra}</div>`;
@@ -163,11 +206,13 @@ function simBanner() {
 
 const routes = {};
 async function route() {
-  S.timers.forEach(clearInterval); S.timers = [];
+  S.timers.forEach(clearInterval); S.timers = []; CHARTS.length = 0;
+  takeTokenFromHash();
   const id = (location.hash.replace("#/", "") || "overview").split("?")[0];
   const page = routes[id] ? id : "overview";
   renderNav(page);
-  try { await loadMeta(); renderNav(page); await routes[page]($("#main")); } catch (e) { $("#main").innerHTML = `<div class="card"><h2>Something went wrong</h2><pre>${esc(e.message)}</pre></div>`; }
+  try { await loadMeta(); renderNav(page); await routes[page]($("#main")); drawCharts(); }
+  catch (e) { if (!e.signin) $("#main").innerHTML = `<div class="card"><h2>Something went wrong</h2><pre>${esc(e.message)}</pre><p class="sub">Reload the page. If it keeps happening, restart the control room from its terminal or <code>run.bat</code>.</p></div>`; }
 }
 
 
@@ -231,18 +276,18 @@ routes.overview = async (el) => {
       { k: "Calls", v: num(s.calls), d: `${num(s.served)} served, ${num(s.blocked)} blocked` },
       { k: "Spend", v: usd(s.total_usd ?? s.usd, 2), d: s.shadow_usd ? `incl. ${usd(s.shadow_usd, 2)} on shadow calls` : `${usd(s.usd_per_call)} per call` },
       { k: "Saved by routing", v: usd(r.report.saved_usd, 2), d: `${(r.report.saved_pct || 0).toFixed(1)}% vs always ${esc(r.baseline_model)}` },
-      { k: "p95 latency", v: ms(s.p95_ms), d: "cache hits excluded" },
+      { k: "p95 latency", v: ms(s.p95_ms), d: "95 in 100 answers came faster (cache hits excluded)" },
       { k: "Cache hit rate", v: pct(s.cache_hit_rate) },
       { k: "Error rate", v: pct(s.error_rate), d: `fallback rate ${pct(s.fallback_rate)}` },
-      { k: "Mean grounding", v: s.mean_grounding == null ? "-" : pct(s.mean_grounding), d: `${num(s.grounded_n)} RAG answers` },
+      { k: "Mean grounding", v: s.mean_grounding == null ? "-" : pct(s.mean_grounding), d: `how much of an answer the retrieved text backs up; ${num(s.grounded_n)} answers with context` },
       { k: "Alerts", v: num(o.alerts.length), d: o.alerts[0] ? esc(o.alerts[0].message) : "none fired" },
     ]) : "") +
     (s.calls ? `<div class="grid g2">
       <div class="card"><h2>Calls over time</h2>${lineChart([{ name: "calls", values: o.series.map((p) => p.calls || 0), color: "var(--c1)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => Math.round(v) })}</div>
       <div class="card"><h2>p95 latency (uncached)</h2>${lineChart([{ name: "p95", values: o.series.map((p) => p.p95_ms || 0), color: "var(--c3)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: ms })}</div>
-      <div class="card"><h2>Spend by tenant</h2>${bars(o.by_tenant.map((t) => ({ label: t.tenant, value: t.total_usd ?? t.usd, sub: `${usd(t.usd_per_success)}/ok` })), (v) => usd(v, 3))}</div>
+      <div class="card"><h2>Spend by tenant</h2>${bars(o.by_tenant.map((t) => ({ label: t.tenant, value: t.total_usd ?? t.usd })), (v) => usd(v, 3))}<div class="sub" style="margin-top:6px">Cost per good answer for each tenant is under <a href="#/observability">Observability</a>.</div></div>
       <div class="card"><h2>Routing: model share</h2>${bars(Object.entries(r.report.by_model || {}).map(([m, c]) => ({ label: m, value: c, color: modelColor(m) })), num)}</div>
-      <div class="card"><h2>Releases</h2>${rel.length ? `<table><tr><th>Release</th><th>Champion</th><th>Challenger</th><th>State</th></tr>${rel.map((x) => `<tr><td><a href="#/releases?r=${esc(x.name)}">${esc(x.name)}</a></td><td>v${x.champion}</td><td>${x.challenger ? "v" + x.challenger + " (" + Math.round(x.versions.find((v) => v.version === x.challenger).traffic * 100) + "%)" : "-"}</td><td>${x.last_verdict ? chip(x.last_verdict.replace(/_/g, " "), x.last_verdict === "ok" ? "good" : "warn") : `<span class="sub">-</span>`}</td></tr>`).join("")}</table>` : `<div class="empty">No releases yet. Run the canary scenarios in the Simulator.</div>`}</div>
+      <div class="card"><h2>Releases</h2>${rel.length ? `<table><tr><th>Release</th><th>Champion</th><th>Challenger</th><th>State</th></tr>${rel.map((x) => `<tr><td><a href="#/releases?r=${esc(x.name)}">${esc(x.name)}</a></td><td>v${x.champion}</td><td>${x.challenger ? "v" + x.challenger + " (" + Math.round(x.versions.find((v) => v.version === x.challenger).traffic * 100) + "%)" : "-"}</td><td>${x.last_verdict ? chip(x.last_verdict.replace(/_/g, " "), x.last_verdict === "ok" ? "good" : "warn") : `<span class="sub">-</span>`}</td></tr>`).join("")}</table>` : `<div class="empty">No releases yet. A release lets you try a new prompt or model on part of the traffic. Run a canary scenario in the <a href="#/simulator">Simulator</a> to see one.</div>`}</div>
       <div class="card"><h2>Recent alerts</h2>${o.alerts.length ? `<table>${o.alerts.slice(0, 6).map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}</td></tr>`).join("")}</table>` : `<div class="empty">No alerts</div>`}</div>
     </div>` : `<div class="card empty">Nothing recorded yet. Send a prompt with the Try-it panel above, <a href="#/playground">upload a file of prompts</a> in the Playground, or generate a day of traffic in the <a href="#/simulator">Simulator</a>. <a href="#/about">Read the guide</a>.</div>`);
   heroInit();
@@ -269,9 +314,11 @@ routes.playground = async (el) => {
     <label>Prompt</label><textarea id="p-prompt" rows="6">Hi there, quick question</textarea>
     <label>Retrieved context (optional; enables the grounding score)</label><textarea id="p-context" rows="3"></textarea>
     <div class="row" style="margin-top:10px"><button class="primary" id="p-send">Send through gateway</button><button id="p-dry">Route only (no call)</button></div>
-    <h3>Or call it from your app</h3><pre id="p-curl"></pre>
+    <h3>Or call it from your app</h3><pre id="p-curl"></pre><div class="sub" id="p-curl-note"></div>
   </div><div class="card" id="p-out"><div class="empty">The result appears here.</div></div></div>`;
-  const curl = () => { const t = $("#p-tenant").value; $("#p-curl").textContent = `curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ${m.demo_keys[t] || "lcr-..."}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'`; };
+  const curl = () => { const t = $("#p-tenant").value, k = m.demo_keys[t];
+    $("#p-curl").textContent = curlText(k || `PASTE-THE-KEY-OF-${t}`);
+    $("#p-curl-note").innerHTML = (k ? `This is ${esc(t)}'s demo key.` : `Use the key shown when ${esc(t)} or its newest key was created under <a href="#/tenants">Tenants and keys</a>. Keys are stored only as a hash, so a lost key is replaced with New key, never shown again.`) + ` In Windows PowerShell type <code>curl.exe</code> rather than <code>curl</code>.`; };
   curl(); $("#p-tenant").onchange = curl;
   $$("[data-p]").forEach((b) => (b.onclick = () => { const p = PRESETS[+b.dataset.p]; $("#p-prompt").value = p[1]; $("#p-context").value = p[2] || ""; }));
   const send = (dry) => guard(async () => {
@@ -285,13 +332,14 @@ routes.playground = async (el) => {
   el.insertAdjacentHTML("beforeend", batchCardHtml()); bindBatch();
 };
 function renderResult(r, dry) {
-  const rt = r.route, pts = Object.entries(rt.signals.points);
+  const rt = r.route, pts = Object.entries(rt.signals.points).filter(([, v]) => v);
   $("#p-out").innerHTML = `${dry ? "" : `<h2>Answer</h2><div class="answer">${esc(r.text)}</div>
     <div style="margin-top:8px">${chip(r.model, "info")}${chip(r.provider)}${r.cached ? chip("cache hit", "good") : chip("cache miss")}${chip(usd(r.usage.usd, 6))}${chip("saved " + usd(r.usage.saved_usd, 6), "good")}${chip(ms(r.latency_ms))}${chip(r.usage.prompt_tokens + " in / " + r.usage.completion_tokens + " out tokens")}${r.fallback_used ? chip("fallback used", "warn") : ""}${r.grounding != null ? chip("grounding " + pct(r.grounding), r.grounding < 0.5 ? "bad" : "good") : ""}${r.release ? chip(`${r.release} v${r.version}`, "info") : ""}${r.quality_ok === false ? chip("mock quality draw: bad", "bad") : ""}</div>`}
     <h3>Redactions before the call left</h3><div>${(r.redactions || []).length ? r.redactions.map((x) => chip(x, "warn")).join("") : `<span class="sub">none</span>`}</div>
     <h3>Routing decision</h3><div>${chip(rt.difficulty + " (score " + rt.score + ")", "info")}${chip("min quality " + rt.min_quality)}${chip("baseline " + rt.baseline_model + " " + usd(rt.baseline_usd, 6))}</div>
     <div class="sub" style="margin:4px 0">${esc(rt.reason)}. Chain: ${[rt.primary, ...rt.chain].map(esc).join(" , ")}</div>
-    ${pts.length ? bars(pts.map(([k, v]) => ({ label: k, value: Math.abs(v), sub: (v < 0 ? "-" : "+") + Math.abs(v), color: v < 0 ? "var(--good)" : "var(--c1)" })), () => "") : ""}
+    ${pts.length ? `<div class="sub" style="margin-top:6px">What set the difficulty score (points add up; minus points make it easier):</div>` + bars(pts.map(([k, v]) => ({ label: k, value: Math.abs(v), sub: (v < 0 ? "-" : "+") + Math.abs(v), color: v < 0 ? "var(--good)" : "var(--c1)" })), () => "") : `<div class="sub" style="margin-top:6px">No difficulty signals in this prompt, so it counts as easy.</div>`}
+    <div class="sub" style="margin:8px 0 4px">Quality is how often a model answers this difficulty well (from the model catalogue). The router picks the cheapest model whose quality reaches this tenant's minimum.</div>
     <div class="scroll"><table><tr><th>Candidate</th><th class="n">Quality</th><th class="n">Expected cost</th><th>Enough</th></tr>${rt.candidates.map((c) => `<tr><td>${esc(c.model)}</td><td class="n">${c.quality}</td><td class="n">${usd(c.usd, 6)}</td><td>${c.enough ? chip("yes", "good") : chip("no")}</td></tr>`).join("")}</table></div>
     ${(r.attempts || []).length ? `<h3>Failed attempts</h3>${r.attempts.map((a) => `<div class="mono">${esc(a.model)}: ${esc(a.error)}</div>`).join("")}` : ""}`;
 }
@@ -300,8 +348,8 @@ function renderResult(r, dry) {
 routes.routing = async (el) => {
   const d = await api("/api/routing?hours=24"), r = d.report, f = d.frontier;
   el.innerHTML = header("Router", "Each request goes to the cheapest model that is enough for its difficulty", simBanner()) + (!r.calls ? `<div class="card empty">No routed traffic yet. <a href="#/playground">Run a file of prompts</a> (drop a .jsonl or .csv, or paste) or fill this page from the <a href="#/simulator">Simulator</a>.</div>` : `
-  ${tiles([{ k: "Spend", v: usd(r.usd, 3), d: `${num(r.calls)} calls sent to a model${r.cache_hits ? `; ${num(r.cache_hits)} cache hits not counted` : ""}` }, { k: `Same traffic on ${esc(d.baseline_model)}`, v: usd(r.baseline_usd, 3) }, { k: "Saved", v: usd(r.saved_usd, 3), d: r.saved_pct.toFixed(1) + "%" },
-    { k: "Difficulty estimate vs label", v: r.confusion.accuracy == null ? "-" : pct(r.confusion.accuracy), d: `${num(r.confusion.labelled)} labelled calls` }, { k: "Pinned by caller", v: num(r.pinned) }])}
+  ${tiles([{ k: "Spend", v: usd(r.usd, 3), d: `${num(r.calls)} calls sent to a model${r.cache_hits ? `; ${num(r.cache_hits)} cache hits not counted` : ""}` }, { k: `Same traffic on ${esc(d.baseline_model)}`, v: usd(r.baseline_usd, 3) }, { k: "Saved", v: usd(r.saved_usd, 3), d: `${r.saved_pct.toFixed(1)}% less than always ${esc(d.baseline_model)}` },
+    { k: "Difficulty estimate vs label", v: r.confusion.accuracy == null ? "-" : pct(r.confusion.accuracy), d: `${num(r.confusion.labelled)} labelled calls` }, { k: "Pinned by caller", v: num(r.pinned), d: "calls that named a model, so the router did not choose" }])}
   <div class="grid g2">
     <div class="card"><h2>Where requests went</h2>${bars(Object.entries(r.by_model).sort((a, b) => b[1] - a[1]).map(([m, c]) => ({ label: m, value: c, color: modelColor(m) })), num)}
       <h3>Estimated difficulty</h3>${bars(["easy", "medium", "hard"].map((k) => ({ label: k, value: r.by_difficulty[k] || 0 })), num)}</div>
@@ -311,7 +359,7 @@ routes.routing = async (el) => {
     <div class="card" style="grid-column:1/-1"><h2>Cost against expected success</h2>${f.ready ? scatter(f.points.map((p) => ({ x: p.usd, y: p.expected_success, name: p.name, kind: p.kind }))) + `<div class="sub">${esc(f.note)}</div><div class="scroll"><table><tr><th>Strategy</th><th class="n">Cost</th><th class="n">Expected success</th></tr>${f.points.map((p) => `<tr><td>${esc(p.name)}</td><td class="n">${usd(p.usd, 4)}</td><td class="n">${pct(p.expected_success)}</td></tr>`).join("")}</table></div>` : `<div class="empty">Needs at least 10 routed calls.</div>`}</div>
     <div class="card"><h2>Baseline for "saved"</h2><div class="sub">Savings are measured against sending the same tokens to this model.</div>
       <div class="row"><select id="base">${S.meta.models.map((m) => `<option ${m.id === d.baseline_model ? "selected" : ""}>${esc(m.id)}</option>`).join("")}</select><button id="base-save">Save</button></div></div>
-    <div class="card span2"><h2>Model catalogue</h2><div class="scroll"><table><tr><th>Model</th><th class="n">$/1M in</th><th class="n">$/1M out</th><th class="n">Q easy</th><th class="n">Q med</th><th class="n">Q hard</th></tr>${S.meta.models.map((m) => `<tr><td>${esc(m.id)} ${m.mock ? chip("mock") : ""}</td><td class="n">${m.usd_in_per_1m}</td><td class="n">${m.usd_out_per_1m}</td><td class="n">${m.quality.easy}</td><td class="n">${m.quality.medium}</td><td class="n">${m.quality.hard}</td></tr>`).join("")}</table></div></div>
+    <div class="card"><h2>Model catalogue</h2><div class="sub">Price per million tokens in and out, and quality: how often each model answers easy, medium and hard work well.</div><div class="scroll"><table><tr><th>Model</th><th class="n">$/1M in</th><th class="n">$/1M out</th><th class="n">Q easy</th><th class="n">Q med</th><th class="n">Q hard</th></tr>${S.meta.models.map((m) => `<tr><td>${esc(m.id)} ${m.mock ? chip("mock") : ""}</td><td class="n">${m.usd_in_per_1m}</td><td class="n">${m.usd_out_per_1m}</td><td class="n">${m.quality.easy}</td><td class="n">${m.quality.medium}</td><td class="n">${m.quality.hard}</td></tr>`).join("")}</table></div></div>
   </div>`);
   const sb = $("#base-save"); if (sb) sb.onclick = guard(async () => { await api("/api/settings", "PUT", { baseline_model: $("#base").value }); toast("Baseline saved"); route(); });
 };
@@ -322,6 +370,8 @@ routes.observability = async (el) => {
   const hours = q.get("hours") || "24", tenant = q.get("tenant") || "", feature = q.get("feature") || "";
   const [o, calls] = await Promise.all([api(`/api/obs?hours=${hours}&tenant=${tenant}&feature=${feature}`), api(`/api/calls?limit=40&tenant=${tenant}`)]);
   const s = o.summary, features = o.by_feature.map((f) => f.feature);
+  // tenant and model tables are short: stacked in one column beside the long feature table
+  const costCard = (k) => `<div class="card"><h2>Cost per ${k}</h2><div class="scroll"><table><tr><th>${k}</th><th class="n">Calls</th><th class="n">Spend</th><th class="n">$/call</th><th class="n">$/success</th><th class="n">p95</th><th class="n">Success</th></tr>${o["by_" + k].map((g) => `<tr><td>${esc(g[k])}${g.shadow_only ? " " + chip("shadow only", "warn") : ""}</td><td class="n">${num(g.calls)}</td><td class="n">${usd(g.total_usd ?? g.usd, 4)}${g.shadow_usd && !g.shadow_only ? `<div class="sub">incl. ${usd(g.shadow_usd, 4)} shadow</div>` : ""}</td><td class="n">${usd(g.usd_per_call, 5)}</td><td class="n">${usd(g.usd_per_success, 5)}</td><td class="n">${ms(g.p95_ms)}</td><td class="n">${pct(g.success_rate)}</td></tr>`).join("")}</table></div></div>`;
   el.innerHTML = header("Observability", "Cost per tenant, feature and success; latency percentiles; grounding; prompt drift. No prompt is ever stored.", simBanner()) + `
   <div class="card" style="margin-bottom:14px"><div class="row"><div><label>Window</label><select id="f-h">${[1, 6, 24, 72, 168].map((h) => `<option value="${h}" ${String(h) === hours ? "selected" : ""}>last ${h} h</option>`).join("")}</select></div>
   <div><label>Tenant</label><select id="f-t"><option value="">all</option>${tenantOptions(tenant)}</select></div>
@@ -329,24 +379,24 @@ routes.observability = async (el) => {
   <button id="f-go" class="primary">Apply</button><button id="f-alerts">Evaluate alerts now</button><button id="f-csv" title="Per-call cost and latency, no prompt text">Export CSV</button></div></div>
   ${s.calls ? tiles([
     { k: "Calls", v: num(s.calls) }, { k: "Spend", v: usd(s.total_usd ?? s.usd, 3), d: s.shadow_usd ? `incl. ${usd(s.shadow_usd, 3)} on shadow calls; ${usd(s.usd_per_success)} per served success` : `${usd(s.usd_per_success)} per successful answer` },
-    { k: "p50 / p95 / p99", v: `${ms(s.p50_ms)}`, d: `${ms(s.p95_ms)} / ${ms(s.p99_ms)} (cache hits excluded)` },
-    { k: "Success rate", v: pct(s.success_rate), d: "mock quality draw, where known" },
-    { k: "Grounding", v: s.mean_grounding == null ? "-" : pct(s.mean_grounding), d: s.ungrounded_rate == null ? "" : `${pct(s.ungrounded_rate)} ungrounded` },
+    { k: "Latency p50 / p95 / p99", v: `${ms(s.p50_ms)}`, d: `half of answers came faster than ${ms(s.p50_ms)}, 95 in 100 faster than ${ms(s.p95_ms)}, 99 in 100 faster than ${ms(s.p99_ms)} (cache hits excluded)` },
+    { k: "Success rate", v: pct(s.success_rate), d: "answers judged good (only the mock provider reports this)" },
+    { k: "Grounding", v: s.mean_grounding == null ? "-" : pct(s.mean_grounding), d: `how much of an answer the retrieved text backs up${s.ungrounded_rate == null ? "" : `; ${pct(s.ungrounded_rate)} of answers mostly unsupported`}` },
     { k: "Cache hits", v: pct(s.cache_hit_rate) }, { k: "Fallbacks", v: pct(s.fallback_rate), d: `errors ${pct(s.error_rate)}` }, { k: "Redacted", v: pct(s.redacted_rate), d: `${num(s.blocked)} blocked, ${num(s.limited)} limited` },
   ]) + `<div class="grid" style="grid-template-columns:repeat(auto-fit, minmax(min(460px, 100%), 1fr))">
     <div class="card"><h2>Calls per interval</h2>${lineChart([{ name: "calls", values: o.series.map((p) => p.calls || 0), color: "var(--c1)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: Math.round })}</div>
-    <div class="card"><h2>Spend per interval</h2>${lineChart([{ name: "usd", values: o.series.map((p) => p.usd || 0), color: "var(--c2)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => usd(v, 3) })}</div>
+    <div class="card"><h2>Spend per interval</h2>${lineChart([{ name: "usd", values: o.series.map((p) => p.usd || 0), color: "var(--c2)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: axisUsd })}</div>
     <div class="card"><h2>Latency percentiles (uncached)</h2>${lineChart([{ name: "p50", values: o.series.map((p) => p.p50_ms || 0), color: "var(--c1)" }, { name: "p95", values: o.series.map((p) => p.p95_ms || 0), color: "var(--c3)" }, { name: "p99", values: o.series.map((p) => p.p99_ms || 0), color: "var(--c4)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: ms })}</div>
-    <div class="card"><h2>Fallback and error rate</h2>${lineChart([{ name: "fallback", values: o.series.map((p) => p.fallback_rate || 0), color: "var(--c3)" }, { name: "error", values: o.series.map((p) => p.error_rate || 0), color: "var(--bad)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => pct(v, 0) })}</div>
+    <div class="card"><h2>Fallback and error rate</h2>${lineChart([{ name: "fallback", values: o.series.map((p) => p.fallback_rate || 0), color: "var(--c3)" }, { name: "error", values: o.series.map((p) => p.error_rate || 0), color: "var(--bad)" }], { labels: o.series.map((p) => hhmm(p.t)), fmt: (v) => pct(v, 0), floor: 0.1 })}${o.series.some((p) => p.fallback_rate || p.error_rate) ? "" : `<div class="sub">No fallbacks or errors in this window.</div>`}</div>
   </div><div class="grid gt">
-    ${["tenant", "feature", "model"].map((k) => `<div class="card"><h2>Cost per ${k}</h2><div class="scroll"><table><tr><th>${k}</th><th class="n">Calls</th><th class="n">Spend</th><th class="n">$/call</th><th class="n">$/success</th><th class="n">p95</th><th class="n">Success</th></tr>${o["by_" + k].map((g) => `<tr><td>${esc(g[k])}${g.shadow_only ? " " + chip("shadow only", "warn") : ""}</td><td class="n">${num(g.calls)}</td><td class="n">${usd(g.total_usd ?? g.usd, 4)}${g.shadow_usd && !g.shadow_only ? `<div class="sub">incl. ${usd(g.shadow_usd, 4)} shadow</div>` : ""}</td><td class="n">${usd(g.usd_per_call, 5)}</td><td class="n">${usd(g.usd_per_success, 5)}</td><td class="n">${ms(g.p95_ms)}</td><td class="n">${pct(g.success_rate)}</td></tr>`).join("")}</table></div></div>`).join("")}
+    <div style="display:grid;gap:14px;align-content:start;min-width:0">${costCard("tenant")}${costCard("model")}</div>${costCard("feature")}
   </div><div class="grid g2" style="margin-top:14px">
     <div class="card"><h2>Prompt drift (PSI)</h2>${driftPanel(o.drift)}</div>
-    <div class="card"><h2>Alerts</h2>${o.alerts.length ? `<table>${o.alerts.map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}<div class="sub">${when(a.at)}</div></td></tr>`).join("")}</table>` : `<div class="empty">No alerts. Rules need 30+ calls in the window and respect a cooldown.</div>`}</div>
+    <div style="display:grid;gap:14px;align-content:start;min-width:0"><div class="card"><h2>Alerts</h2>${o.alerts.length ? `<table>${o.alerts.map((a) => `<tr><td>${chip(a.severity, a.severity === "critical" ? "bad" : "warn")}</td><td>${esc(a.scope)}</td><td>${esc(a.message)}<div class="sub">${when(a.at)}</div></td></tr>`).join("")}</table>` : `<div class="empty">No alerts. A rule needs at least 30 calls in the window before it can fire, and then waits a while before firing again.</div>`}</div>
     <div class="card"><h2>Fault injection (mock models only)</h2><div class="sub">Makes the mock provider misbehave so you can watch fallbacks, alerts and the release checks react.</div>
       <div class="row"><div><label>Model</label><select id="fi-m">${S.meta.models.filter((m) => m.mock).map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>Error rate</label><input id="fi-e" type="number" min="0" max="1" step="0.1" value="0.5" style="width:80px"></div><div><label>Latency x</label><input id="fi-l" type="number" min="0.1" step="0.5" value="1" style="width:80px"></div><button id="fi-set">Inject</button><button id="fi-clear">Clear all</button></div>
       <div class="sub" style="margin-top:6px">Active: ${Object.keys(S.meta.faults).length ? Object.entries(S.meta.faults).map(([m, f]) => chip(`${m}: ${pct(f.error_rate, 0)} errors, x${f.latency_mult} latency`, "warn")).join("") : "none"}</div></div>
-  </div>
+  </div></div>
   <div class="card" style="margin-top:14px"><h2>Recent calls (no prompt text)</h2><div class="scroll"><table><tr><th>Time</th><th>Tenant</th><th>Feature</th><th>Model</th><th>Route</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">Latency</th><th>Flags</th></tr>${calls.map((c) => `<tr><td>${hhmm(c.at)}</td><td>${esc(c.tenant)}</td><td>${esc(c.feature)}</td><td>${esc(c.model || "-")}</td><td>${esc(["easy", "medium", "hard"][c.diff_est])}</td><td class="n">${c.prompt_tokens + c.completion_tokens}</td><td class="n">${usd(c.usd, 6)}</td><td class="n">${ms(c.latency_ms)}</td><td>${orDash(`${c.cached ? chip("cache", "good") : ""}${c.fallback_used ? chip("fallback", "warn") : ""}${c.redactions.length ? chip("redacted", "info") : ""}${c.error ? chip(c.error_kind || "error", "bad") : ""}${c.release ? chip(c.release + " v" + c.version) : ""}`)}</td></tr>`).join("")}</table></div></div>` : `<div class="card empty">No calls in this window. <a href="#/playground">Run a file of prompts</a> in the Playground, start the <a href="#/simulator">Simulator</a>, or widen the window above.</div>`}`;
   $("#f-go").onclick = () => { location.hash = `#/observability?hours=${$("#f-h").value}&tenant=${$("#f-t").value}&feature=${$("#f-f").value}`; };
   $("#f-csv").onclick = guard(async () => {
@@ -362,7 +412,7 @@ routes.observability = async (el) => {
 };
 function driftPanel(d) {
   if (!d.ready) return `<div class="empty">${esc(d.reason)}</div>`;
-  return `<div class="sub">Reference: ${num(d.reference_n)} earlier calls. Current: the last ${num(d.current_n)}. Under 0.10 stable, 0.10 to 0.25 moderate, over 0.25 significant. Only prompt shape (length, question type) is compared.</div>
+  return `<div class="sub">PSI (population stability index) is one number for how much the mix of prompts has changed: the last ${num(d.current_n)} calls against ${num(d.reference_n)} earlier ones. Under 0.10 is stable, 0.10 to 0.25 a moderate shift, over 0.25 a significant one. Only the shape of prompts (length, question type, feature, tenant) is compared, never their text.</div>
   <table><tr><th>Dimension</th><th class="n">PSI</th><th>Reading</th></tr>${d.dimensions.map((x) => `<tr><td>${esc(x.dimension)}</td><td class="n">${x.psi.toFixed(3)}</td><td>${chip(x.reading, x.reading === "stable" ? "good" : x.reading === "moderate shift" ? "warn" : "bad")}</td></tr>`).join("")}</table>
   ${(() => { const w = d.dimensions.find((x) => x.dimension === d.worst); return `<h3>Largest shift: ${esc(w.dimension)}</h3>${groupedBars(w.labels, w.reference, w.current)}<div class="legend"><span><i style="background:var(--c6)"></i>reference</span><span><i style="background:var(--c1)"></i>current</span></div>`; })()}`;
 }
@@ -373,28 +423,34 @@ routes.releases = async (el) => {
   const q = new URLSearchParams(location.hash.split("?")[1] || "");
   const sel = q.get("r") || rels[0]?.name;
   el.innerHTML = header("Releases", "Model and prompt versions with A/B, canary and shadow traffic, SLOs and auto-rollback") + `
-  <div class="card" style="margin-bottom:14px"><div class="row">${rels.map((r) => `<a class="btn ${r.name === sel ? "primary" : ""}" href="#/releases?r=${esc(r.name)}"${r.name === sel ? ' aria-current="page"' : ""}>${esc(r.name)}</a>`).join("")}
-    <div><label>New release</label><input id="nr-name" placeholder="name" size="12"></div><div><label>Model</label><select id="nr-model"><option>auto</option>${S.meta.models.map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>System prompt</label><input id="nr-sys" placeholder="optional" size="26"></div><button id="nr-go">Create</button></div>
-    <div class="sub" style="margin-top:6px">Call a release like a model: <code>"model": "${esc(sel || "support-bot")}"</code>. Assignment is a hash of the session key, so the same user stays on the same arm.</div></div><div id="rel"></div>`;
+  ${releaseWords(!rels.length)}
+  <div class="grid g2" style="margin-bottom:14px"><div class="card"><h2>Your releases</h2>${rels.length ? `<div class="row">${rels.map((r) => `<a class="btn ${r.name === sel ? "primary" : ""}" href="#/releases?r=${esc(r.name)}"${r.name === sel ? ' aria-current="page"' : ""}>${esc(r.name)}</a>`).join("")}</div>
+    <div class="sub" style="margin-top:8px">Your app calls a release like a model: <code>"model": "${esc(sel)}"</code>. Each user is kept on the same version by a hash of their session key.</div>` : `<div class="sub">None yet. Create one, or run canary-good, canary-bad or ab-test in the <a href="#/simulator">Simulator</a> to see a release with traffic.</div>`}</div>
+    <div class="card"><h2>New release</h2><div class="row"><div><label for="nr-name">Name</label><input id="nr-name" placeholder="e.g. support-bot" size="14"></div><div><label for="nr-model">Model</label><select id="nr-model"><option>auto</option>${S.meta.models.map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label for="nr-sys">System prompt</label><input id="nr-sys" placeholder="optional" size="22"></div><button id="nr-go">Create</button></div>
+    <div class="sub" style="margin-top:6px">This becomes version 1, the champion. Add a second version below to test it against the first.</div></div></div><div id="rel"></div>`;
   $("#nr-go").onclick = guard(async () => { await api("/api/releases", "POST", { name: $("#nr-name").value.trim(), model: $("#nr-model").value, system_prompt: $("#nr-sys").value }); location.hash = "#/releases?r=" + $("#nr-name").value.trim(); route(); });
-  if (!sel) { $("#rel").innerHTML = `<div class="card empty">No releases. Create one above (you can load its system prompt from a .txt file under "New version" once it exists), or run canary-good, canary-bad or ab-test in the <a href="#/simulator">Simulator</a>.</div>`; return; }
+  if (!sel) return;
   const draw = async () => {
     const r = await api("/api/releases/" + encodeURIComponent(sel)); if (!$("#rel")) return;
     const ck = r.check, an = r.analysis, slo = r.slo;
-    const verdictText = { ok: ["Within SLO", "good"], insufficient_samples: ["Too few samples for a verdict yet", ""], upstream_outage: ["Upstream outage: rollback held", "warn"], bad_canary: ["Bad canary", "bad"], rolled_back: ["Rolled back", "bad"], waiting_for_champion: ["Waiting for champion samples", ""], no_challenger: ["No challenger", ""] };
+    const verdictText = { ok: ["Within its limits (SLO)", "good"], insufficient_samples: ["Too few samples for a verdict yet", ""], upstream_outage: ["Upstream outage: rollback held", "warn"], bad_canary: ["Bad canary", "bad"], rolled_back: ["Rolled back", "bad"], waiting_for_champion: ["Waiting for champion samples", ""], no_challenger: ["No challenger", ""] };
     const vt = ck ? verdictText[ck.verdict] || [ck.verdict, ""] : ["No check yet", ""];
     $("#rel").innerHTML = `<div class="grid g2">
-    <div class="card" style="grid-column:1/-1"><h2>${esc(r.name)} versions</h2><div class="scroll"><table><tr><th>Version</th><th>Stage</th><th>Model</th><th>Prompt</th><th class="n">Traffic</th><th class="n">Window n</th><th class="n">Err+fallback</th><th class="n">p95</th><th class="n">Quality</th><th>Actions</th></tr>
+    <div class="card" style="grid-column:1/-1"><h2>${esc(r.name)} versions</h2><div class="scroll"><table><tr><th>Version</th><th>Stage</th><th>Model</th><th>Prompt</th><th class="n">Traffic</th><th class="n">Recent calls</th><th class="n">Errors or fallbacks</th><th class="n">p95</th><th class="n">Quality</th><th>Actions</th></tr>
     ${r.versions.map((v) => { const w = r.window[v.version] || {}; return `<tr><td><b>v${v.version}</b><div class="sub">${esc(v.note)}</div></td><td><span class="stage">${chip(v.stage, v.stage === "champion" ? "good" : v.stage === "challenger" ? "info" : v.stage === "shadow" ? "warn" : "")}</span></td><td>${esc(v.model)}</td><td class="mono" style="max-width:260px">${esc(v.system_prompt || "(none)")}</td><td class="n">${v.stage === "champion" ? Math.round((1 - (r.versions.find((x) => x.stage === "challenger")?.traffic || 0)) * 100) + "%" : v.stage === "challenger" ? Math.round(v.traffic * 100) + "%" : "-"}</td><td class="n">${w.n || 0}</td><td class="n">${pct(w.error_rate || 0)}</td><td class="n">${ms(w.p95_ms)}</td><td class="n">${pct(w.quality_rate)}</td>
     <td>${orDash(`${v.stage === "archived" ? `<button class="sm" data-a="canary" data-v="${v.version}">Canary 20%</button> <button class="sm" data-a="ab" data-v="${v.version}">A/B 50%</button> <button class="sm" data-a="shadow" data-v="${v.version}">Shadow</button> ` : ""}${v.stage === "shadow" ? `<button class="sm" data-a="unshadow" data-v="${v.version}">Stop shadow</button> ` : ""}${v.stage !== "champion" ? `<button class="sm" data-a="promote" data-v="${v.version}">Promote</button>` : ""}${v.stage === "challenger" ? ` <button class="sm danger" data-a="rollback">Roll back</button>` : ""}`)}</td></tr>`; }).join("")}</table></div>
-    ${r.challenger ? `<div class="row" style="margin-top:8px"><label style="margin:0">Challenger traffic <span id="tr-v">${Math.round(r.versions.find((v) => v.version === r.challenger).traffic * 100)}%</span></label><input type="range" id="tr" min="5" max="100" step="5" value="${Math.round(r.versions.find((v) => v.version === r.challenger).traffic * 100)}"><button class="sm" id="tr-go">Set</button></div>` : ""}</div>
-    <div class="card"><h2>Auto-rollback check</h2><div>${chip(vt[0], vt[1])}${ck?.challenger ? chip(`challenger n=${ck.challenger.n}`) : ""}</div>
+    ${r.challenger ? `<div class="row" style="margin-top:8px"><label style="margin:0">Challenger traffic <span id="tr-v">${Math.round(r.versions.find((v) => v.version === r.challenger).traffic * 100)}%</span></label><input type="range" id="tr" min="5" max="100" step="5" value="${Math.round(r.versions.find((v) => v.version === r.challenger).traffic * 100)}" aria-label="Challenger traffic"><button class="sm" id="tr-go">Set</button></div>` : ""}
+    <div class="sub" style="margin-top:6px">Recent calls, errors, p95 and quality are read over each version's last ${slo.window} calls, the same calls the auto-rollback check reads.</div></div>
+    <div class="grid g2" style="grid-column:1/-1">
+    <div class="card"><h2>Auto-rollback check</h2><div>${chip(vt[0], vt[1])}${ck?.challenger ? chip(`${ck.challenger.n} challenger calls checked`) : ""}</div>
       ${(ck?.breaches || []).map((b) => `<div style="margin-top:6px">${chip(b.breach, b.upstream ? "warn" : "bad")} ${b.upstream ? "<b>upstream</b>" : "<b>the version's fault</b>"}: ${esc(b.why)}</div>`).join("") || `<div class="sub" style="margin-top:6px">A breach is only blamed on the version when the champion and the wider traffic on the same model are healthy. During an outage the rollout is held instead.</div>`}
-      <h3>Service level objectives (last ${slo.window} calls per version)</h3>
-      <div class="row"><div><label>p95 ms</label><input id="s-p95" type="number" value="${slo.max_p95_ms}" style="width:90px"></div><div><label>Max error rate</label><input id="s-err" type="number" step="0.01" value="${slo.max_error_rate}" style="width:80px"></div><div><label>Quality floor</label><input id="s-q" type="number" step="0.05" value="${slo.min_quality_rate}" style="width:80px"></div><div><label>Max drop vs champion</label><input id="s-d" type="number" step="0.05" value="${slo.max_quality_drop}" style="width:80px"></div><div><label>Min samples</label><input id="s-n" type="number" value="${slo.min_samples}" style="width:80px"></div><div><label>Auto-rollback</label><select id="s-ar"><option value="1" ${r.auto_rollback ? "selected" : ""}>on</option><option value="0" ${r.auto_rollback ? "" : "selected"}>off</option></select></div><button id="s-go">Save</button></div></div>
-    <div class="card"><h2>New version</h2><div class="row"><div><label>Model</label><select id="nv-model"><option>auto</option>${S.meta.models.map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>Note</label><input id="nv-note" size="18"></div></div><label>System prompt <span class="sub">(mock only: <code>[[mock quality=-0.5 latency=2]]</code> simulates a regressed prompt)</span></label><textarea id="nv-sys" rows="2"></textarea><button id="nv-go" style="margin-top:8px">Add version</button> <button class="danger" id="rel-del">Delete release</button></div>
-    <div class="card" style="grid-column:1/-1"><h2>Version comparison (all recorded calls)</h2>${an.arms.length ? `<div class="scroll"><table><tr><th>Version</th><th class="n">Calls</th><th class="n">Success</th><th class="n">Errors</th><th class="n">$/call</th><th class="n">p50</th><th class="n">p95</th><th class="n">Agrees with served</th></tr>${an.arms.map((a) => `<tr><td>v${a.version} ${a.shadow ? chip("shadow", "warn") : chip(a.stage)}<div class="sub">${esc(a.model)}</div></td><td class="n">${num(a.n)}</td><td class="n">${pct(a.success_rate)}</td><td class="n">${pct(a.error_rate)}</td><td class="n">${usd(a.usd_per_call, 6)}</td><td class="n">${ms(a.p50_ms)}</td><td class="n">${ms(a.p95_ms)}</td><td class="n">${a.agreement == null ? "-" : pct(a.agreement)}</td></tr>`).join("")}</table></div>` : `<div class="empty">No traffic through this release yet.</div>`}
-      ${an.comparison ? `<div style="margin-top:8px">${chip(an.comparison.verdict, an.comparison.verdict === "challenger better" ? "good" : an.comparison.verdict === "challenger worse" ? "bad" : "")}<span class="sub">success delta ${(an.comparison.success_delta * 100).toFixed(1)} pts, z ${an.comparison.z}, p ${an.comparison.p_value}; cost delta ${usd(an.comparison.cost_delta_per_call, 6)}/call; p95 delta ${an.comparison.p95_delta_ms} ms</span></div>` : ""}</div>
+      <h3>Limits each version must stay within (SLO)</h3><div class="sub">SLO means service level objective. A challenger that breaks one of these on its own, with enough samples, is rolled back when auto-rollback is on.</div>
+      <div class="row"><div><label>p95 latency, ms</label><input id="s-p95" type="number" value="${slo.max_p95_ms}" style="width:90px"></div><div><label>Max error rate</label><input id="s-err" type="number" step="0.01" value="${slo.max_error_rate}" style="width:80px"></div><div><label>Quality floor</label><input id="s-q" type="number" step="0.05" value="${slo.min_quality_rate}" style="width:80px"></div><div><label>Max drop vs champion</label><input id="s-d" type="number" step="0.05" value="${slo.max_quality_drop}" style="width:80px"></div><div><label>Min samples</label><input id="s-n" type="number" value="${slo.min_samples}" style="width:80px"></div><div><label>Auto-rollback</label><select id="s-ar"><option value="1" ${r.auto_rollback ? "selected" : ""}>on</option><option value="0" ${r.auto_rollback ? "" : "selected"}>off</option></select></div><button id="s-go">Save</button></div></div>
+    <div class="card"><h2>New version</h2><div class="row"><div><label>Model</label><select id="nv-model"><option>auto</option>${S.meta.models.map((m) => `<option>${esc(m.id)}</option>`).join("")}</select></div><div><label>Note</label><input id="nv-note" size="18"></div></div><label>System prompt <span class="sub">(mock only: <code>[[mock quality=-0.5 latency=2]]</code> simulates a regressed prompt)</span></label><textarea id="nv-sys" rows="2"></textarea><button id="nv-go" style="margin-top:8px">Add version</button> <button class="danger" id="rel-del">Delete release</button>
+      <div class="sub" style="margin-top:8px">A new version starts archived. Use Canary 20%, A/B 50% or Shadow in the versions table to send it traffic.</div></div></div>
+    <div class="card" style="grid-column:1/-1"><h2>Version comparison (all recorded calls)</h2>${an.arms.length ? `<div class="scroll"><table><tr><th>Version</th><th class="n">Calls</th><th class="n">Success</th><th class="n">Errors</th><th class="n">$/call</th><th class="n">p50</th><th class="n">p95</th><th class="n">Same answer as served</th></tr>${an.arms.map((a) => `<tr><td>v${a.version} ${a.shadow ? chip("shadow", "warn") : chip(a.stage)}<div class="sub">${esc(a.model)}</div></td><td class="n">${num(a.n)}</td><td class="n">${pct(a.success_rate)}</td><td class="n">${pct(a.error_rate)}</td><td class="n">${usd(a.usd_per_call, 6)}</td><td class="n">${ms(a.p50_ms)}</td><td class="n">${ms(a.p95_ms)}</td><td class="n">${a.agreement == null ? "-" : pct(a.agreement)}</td></tr>`).join("")}</table></div>` : `<div class="empty">No traffic through this release yet.</div>`}
+      ${an.comparison ? `<div style="margin-top:8px">${chip(an.comparison.verdict, an.comparison.verdict === "challenger better" ? "good" : an.comparison.verdict === "challenger worse" ? "bad" : "")}<span class="sub">success ${an.comparison.success_delta >= 0 ? "+" : ""}${(an.comparison.success_delta * 100).toFixed(1)} points, z ${an.comparison.z}, ${pval(an.comparison.p_value)}; cost ${an.comparison.cost_delta_per_call >= 0 ? "+" : "-"}${usd(Math.abs(an.comparison.cost_delta_per_call), 6)} per call; p95 ${an.comparison.p95_delta_ms >= 0 ? "+" : ""}${an.comparison.p95_delta_ms} ms (challenger against champion)</span></div>
+      <div class="sub" style="margin-top:6px">The verdict comes from a two-proportion test: how likely a success gap this large would be by chance alone. Under p = 0.05 the gap is treated as real. "Same answer as served" is for shadow versions: how often the answer nobody saw matched the one the user got.</div>` : `<div class="sub" style="margin-top:6px">A verdict appears once both versions have traffic. It comes from a two-proportion test: how likely a success gap this large would be by chance alone.</div>`}</div>
     <div class="card" style="grid-column:1/-1"><h2>Event log</h2>${r.events.length ? `<table class="events"><tr><th>When</th><th>Event</th><th>Detail</th></tr>${r.events.map((e) => `<tr><td class="sub" style="white-space:nowrap">${when(e.at)}</td><td>${chip(e.kind.replace(/_/g, " "), /rollback|held/.test(e.kind) ? "warn" : "info")}</td><td>${detailHtml(e.detail)}</td></tr>`).join("")}</table>` : `<div class="empty">No events</div>`}</div></div>`;
     const base = "/api/releases/" + encodeURIComponent(sel);
     $$("[data-a]").forEach((b) => (b.onclick = guard(async () => {
@@ -416,22 +472,34 @@ routes.releases = async (el) => {
   await draw();
 };
 
+const pval = (p) => (p == null ? "p -" : p < 0.001 ? "p < 0.001" : "p = " + Number(p).toFixed(3));
+function releaseWords(open) {
+  return `<details class="card explain" style="margin-bottom:14px"${open ? " open" : ""}><summary><b>What a release is, and the words on this page</b></summary><dl class="words">
+    <div><dt>Release</dt><dd>A named model plus system prompt that your app calls like a model name. It has numbered versions.</dd></div>
+    <div><dt>Champion / challenger</dt><dd>The champion is the version most users get; the challenger is the new one being tried.</dd></div>
+    <div><dt>Canary</dt><dd>Send a small share (20%) of users to the challenger first, and roll it back automatically if it breaks the limits.</dd></div>
+    <div><dt>A/B</dt><dd>Split users 50/50 and compare success and cost with a two-proportion test (is the gap bigger than chance?).</dd></div>
+    <div><dt>Shadow</dt><dd>The challenger also answers every request in the background; users only ever see the champion's answer, so a bad shadow cannot hurt anyone.</dd></div>
+    <div><dt>SLO and auto-rollback</dt><dd>Limits on p95 latency (95 in 100 calls faster than this), errors and quality. Breaking one sends the challenger back, unless the champion breaks it too: then it is an upstream outage and the rollout is held.</dd></div></dl></details>`;
+}
+
 // ---------- agents
 let agentSel = "research", currentRun = null, lastSeq = 0;
 routes.agents = async (el) => {
   const scen = S.meta.agent_scenarios, profs = S.meta.sandbox_profiles;
   el.innerHTML = header("Agent runs", "Run agents under hard limits: cost, steps, time, loop detection and approval gates") + `
   <div class="grid g2"><div class="card"><h2>Start a run</h2>
-    <div class="grid g3" style="gap:8px">${scen.map((s) => `<div class="scen ${s.id === agentSel ? "sel" : ""}" data-s="${esc(s.id)}"><b>${esc(s.title)}</b><span>${esc(s.expect)}</span></div>`).join("")}</div>
+    <div class="grid g3" style="gap:8px">${scen.map((s) => `<button type="button" class="scen ${s.id === agentSel ? "sel" : ""}" data-s="${esc(s.id)}" aria-pressed="${s.id === agentSel}"><b>${esc(s.title)}</b><span>${esc(s.expect)}</span></button>`).join("")}</div>
     <label>Goal</label><textarea id="a-goal" rows="2"></textarea>
     <div class="row"><div><label>Tenant</label><select id="a-tenant">${tenantOptions("initech")}</select></div>
     <div><label>Sandbox profile</label><select id="a-prof">${profs.map((p) => `<option value="${p.name}" ${p.available ? "" : "disabled"} ${p.name === "restricted" ? "selected" : ""}>${p.name}${p.available ? "" : " (unavailable)"}</option>`).join("")}</select></div>
-    <div><label>Approval needed above</label><select id="a-ceil"><option value="read">read-only tools</option><option value="write" selected>writes</option><option value="external">external actions</option></select></div></div>
-    <h3>Hard limits</h3><div class="row">${[["max_steps", "Steps", 12], ["max_tool_calls", "Tool calls", 20], ["max_usd", "Cost $", 0.25], ["max_seconds", "Seconds", 30], ["max_repeats", "Repeat limit", 3]].map(([k, l, d]) => `<div><label>${l}</label><input data-l="${k}" type="number" step="any" style="width:84px"></div>`).join("")}</div>
+    <div><label for="a-ceil">Ask a human before</label><select id="a-ceil"><option value="read">writes, external and irreversible actions</option><option value="write" selected>external and irreversible actions</option><option value="external">irreversible actions only</option></select></div></div>
+    <div class="sub" style="margin-top:6px">The sandbox profile is how the agent's generated code is fenced in (see Sandbox). Every tool has a risk level: read, write, external (email, web) or irreversible (delete).</div>
+    <h3>Hard limits</h3><div class="sub">The run stops at the first one it would cross, and says which. Repeat limit: how many identical actions in a row count as a loop.</div><div class="row">${[["max_steps", "Steps", 12], ["max_tool_calls", "Tool calls", 20], ["max_usd", "Cost $", 0.25], ["max_seconds", "Seconds", 30], ["max_repeats", "Repeat limit", 3]].map(([k, l, d]) => `<div><label>${l}</label><input data-l="${k}" type="number" step="any" style="width:84px"></div>`).join("")}</div>
     <div style="margin-top:10px"><button class="primary" id="a-go">Run agent</button></div></div>
   <div class="card"><h2>Run log <span id="r-status"></span></h2><div id="r-pending"></div><div class="log" id="r-log"><div class="sub">Start a run to watch it live. Pick a scenario, edit the goal (type, paste or load a .txt file) and press Run agent.</div></div><div id="r-result"></div></div>
   <div class="card" style="grid-column:1/-1"><h2>Recent runs</h2><div id="r-list"></div></div></div>`;
-  const fill = () => { const s = scen.find((x) => x.id === agentSel); $("#a-goal").value = s.goal; $$("[data-l]").forEach((i) => (i.value = s.limits[i.dataset.l] ?? {max_steps: 12, max_tool_calls: 20, max_usd: 0.25, max_seconds: 30, max_repeats: 3}[i.dataset.l])); $$(".scen").forEach((x) => x.classList.toggle("sel", x.dataset.s === agentSel)); };
+  const fill = () => { const s = scen.find((x) => x.id === agentSel); $("#a-goal").value = s.goal; $$("[data-l]").forEach((i) => (i.value = s.limits[i.dataset.l] ?? {max_steps: 12, max_tool_calls: 20, max_usd: 0.25, max_seconds: 30, max_repeats: 3}[i.dataset.l])); $$(".scen").forEach((x) => { x.classList.toggle("sel", x.dataset.s === agentSel); x.setAttribute("aria-pressed", x.dataset.s === agentSel); }); };
   attachFile($("#a-goal"), { exts: ["txt", "md"], maxBytes: 20 * 1024, note: "the goal is stored with secrets removed" });
   $$(".scen").forEach((x) => (x.onclick = () => { agentSel = x.dataset.s; fill(); })); fill();
   $("#a-go").onclick = guard(async () => {
@@ -459,7 +527,7 @@ routes.agents = async (el) => {
       else txt = JSON.stringify(x);
       log.insertAdjacentHTML("beforeend", `<div><span class="k ${e.kind}">${e.kind}</span>${esc(txt)}</div>`); log.scrollTop = log.scrollHeight; });
     const r = d.run; $("#r-status").innerHTML = statusChip(r.status);
-    $("#r-pending").innerHTML = r.pending ? `<div class="banner" style="margin-bottom:8px"><b>Approval needed</b>: ${esc(r.pending.tool)} (${esc(r.pending.tier)}) <pre>${esc(JSON.stringify(r.pending.args, null, 2))}</pre><button class="primary" id="ap-y">Approve</button> <button class="danger" id="ap-n">Deny</button></div>` : "";
+    $("#r-pending").innerHTML = r.pending ? `<div class="banner" style="margin-bottom:8px"><b>Approval needed</b>: ${esc(r.pending.tool)} (${esc(r.pending.tier)}). Nothing happens until you choose; these are the exact arguments it will use. <pre>${esc(JSON.stringify(r.pending.args, null, 2))}</pre><button class="primary" id="ap-y">Approve</button> <button class="danger" id="ap-n">Deny</button></div>` : "";
     if (r.pending) { $("#ap-y").onclick = guard(async () => { await api(`/api/runs/${currentRun}/approve`, "POST"); }); $("#ap-n").onclick = guard(async () => { await api(`/api/runs/${currentRun}/deny`, "POST"); }); }
     if (["running", "awaiting_approval"].includes(r.status)) $("#r-result").innerHTML = `<button class="sm" id="r-cancel">Cancel run</button>`, $("#r-cancel").onclick = guard(() => api(`/api/runs/${currentRun}/cancel`, "POST"));
     else $("#r-result").innerHTML = "";
@@ -471,7 +539,7 @@ routes.agents = async (el) => {
 // ---------- sandbox
 routes.sandbox = async (el) => {
   const profs = S.meta.sandbox_profiles;
-  el.innerHTML = header("Sandbox", "Run generated code under named hardening profiles, then measure what each one actually stops") + `<div class="grid g2">
+  el.innerHTML = header("Sandbox", "Run code a model wrote inside a hardening profile (a set of fences around the program: what it may read, write, start or connect to), then measure what each profile really stops") + `<div class="grid g2">
   <div class="card"><h2>Run code</h2><div class="row"><div><label>Profile</label><select id="sb-prof">${profs.map((p) => `<option value="${p.name}" ${p.available ? "" : "disabled"} ${p.name === "restricted" ? "selected" : ""}>${p.name}${p.available ? "" : " (unavailable)"}</option>`).join("")}</select></div><div><label>Timeout (s)</label><input id="sb-t" type="number" value="5" min="1" max="30" style="width:70px"></div></div>
   <div class="sub" style="margin-top:6px" id="sb-desc"></div>
   <label>Python</label><textarea id="sb-code" rows="9">import os
@@ -496,21 +564,34 @@ print(open(__file__).read()[:40])</textarea>
 };
 
 // ---------- tenants
+// a key that was just created: shown once, with the exact command that uses it
+let freshKey = null;
+function keyPanel(tenant, key) {
+  return `<div class="banner keyout" style="margin-top:8px" role="status"><b>Key for ${esc(tenant)} (shown only once):</b> <span class="mono keyval">${esc(key)}</span> <button class="sm" data-copy="${esc(key)}">Copy key</button>
+    <div style="margin-top:8px">Call the gateway with it from a terminal:</div><pre>${esc(curlText(key))}</pre><button class="sm" data-copy="${esc(curlText(key))}">Copy command</button>
+    <div class="sub" style="margin-top:6px">Store the key now: only a hash of it is kept, so it cannot be shown again (make a new one if it is lost). In Windows PowerShell type <code>curl.exe</code>. The answer carries the model, cost and cache result in its <code>x-lcr-*</code> headers.</div></div>`;
+}
+function budgetMeter(t) {
+  const share = t.budget_usd > 0 ? t.spent_usd / t.budget_usd : 1;
+  return `<div class="bars meter"><div class="mono">Spent ${usd(t.spent_usd, 4)} of ${usd(t.budget_usd, 2)} (${pct(share)})</div><div class="t" role="img" aria-label="${pct(share)} of the budget spent"><i style="width:${Math.max(1, Math.min(100, share * 100))}%;background:${share > 0.9 ? "var(--bad)" : "var(--c2)"}"></i></div></div>`;
+}
 routes.tenants = async (el) => {
-  const ts = await api("/api/tenants");
-  el.innerHTML = header("Tenants and keys", "Per-tenant API keys, budgets, rate limits, model access, redaction and fallback chains") + `<div class="grid g2">${tenantImportHtml()}${ts.map((t) => `<div class="card"><h2>${esc(t.name)}</h2>
-    ${bars([{ label: "budget", value: t.spent_usd, sub: `of ${usd(t.budget_usd, 2)}`, color: t.spent_usd > t.budget_usd * 0.9 ? "var(--bad)" : "var(--c2)" }], (v) => usd(v, 4))}
-    <div class="sub">${num(t.calls_in_window)} calls in the ${t.budget_window_s / 3600} h window. Budget and rate limits are checked before the call.</div>
-    <div class="row"><div><label>Budget $</label><input data-f="budget_usd" type="number" step="any" value="${t.budget_usd}" style="width:90px"></div><div><label>Requests/min</label><input data-f="rpm" type="number" value="${t.rpm}" style="width:80px"></div><div><label>Min quality (router)</label><input data-f="min_quality" type="number" step="0.05" min="0" max="1" value="${t.min_quality}" style="width:80px"></div></div>
-    <div class="row"><div><label>Allowed models (blank = all)</label><input data-f="allowed_models" value="${esc(t.allowed_models.join(", "))}" size="26"></div><div><label>Fallback chain</label><input data-f="fallbacks" value="${esc(t.fallbacks.join(", "))}" size="22"></div></div>
+  const ts = await api("/api/tenants"), fk = freshKey; freshKey = null;
+  el.innerHTML = header("Tenants and keys", "A tenant is one app or team that calls the gateway. Each has its own API keys, budget, rate limit, allowed models and blocked or redacted words.") + `<div class="grid g2">
+    <div class="card" style="grid-column:1/-1"><h2>New tenant</h2><div class="sub">Give each app its own tenant, so its spend and limits are kept apart.</div><div class="row"><div><label for="nt-name">Name</label><input id="nt-name" placeholder="e.g. support-app"></div><button class="primary" id="nt-go">Create with first key</button></div><div class="sub" style="margin-top:6px">Lowercase letters, digits, - or _. It starts with a $5 budget per 24 hours and 600 requests a minute; change them on its card.</div><div id="nt-out">${fk && fk.isNew ? keyPanel(fk.tenant, fk.key) : ""}</div></div>
+    ${tenantImportHtml()}${ts.map((t) => `<div class="card"><h2>${esc(t.name)}</h2>
+    ${budgetMeter(t)}
+    <div class="sub">${num(t.calls_in_window)} calls in the last ${t.budget_window_s / 3600} h. A call that would go over the budget or the requests-per-minute limit is refused before any model is called.</div>
+    <div class="row"><div><label>Budget $</label><input data-f="budget_usd" type="number" step="any" value="${t.budget_usd}" style="width:90px"></div><div><label>Requests/min</label><input data-f="rpm" type="number" value="${t.rpm}" style="width:80px"></div><div><label>Min model quality</label><input data-f="min_quality" type="number" step="0.05" min="0" max="1" value="${t.min_quality}" style="width:80px"></div></div>
+    <div class="sub" style="margin-top:4px">Min model quality (0 to 1): the router only uses models at least this good for a request's difficulty. Higher is safer and costs more.</div>
+    <div class="row"><div><label>Allowed models (blank = all)</label><input data-f="allowed_models" value="${esc(t.allowed_models.join(", "))}" placeholder="e.g. nano-mock, swift-mock" size="26"></div><div><label>Fallback chain</label><input data-f="fallbacks" value="${esc(t.fallbacks.join(", "))}" placeholder="tried in order if a model fails" size="26"></div></div>
     <div class="row"><div class="termfld"><label>Block these terms</label><input data-f="deny_terms" placeholder="comma separated" value="${esc((t.deny_terms || []).join(", "))}" title="${esc((t.deny_terms || []).join(", "))}" oninput="this.title=this.value"></div><div class="termfld"><label>Redact these terms</label><input data-f="redact_terms" placeholder="comma separated" value="${esc((t.redact_terms || []).join(", "))}" title="${esc((t.redact_terms || []).join(", "))}" oninput="this.title=this.value"></div></div>
-    <div class="row"><label style="display:inline"><input type="checkbox" data-f="redact_pii" ${t.redact_pii ? "checked" : ""}> redact PII (emails, cards, CNIC, phone)</label><label style="display:inline"><input type="checkbox" data-f="cache_enabled" ${t.cache_enabled ? "checked" : ""}> response cache</label></div>
+    <div class="row"><label style="display:inline"><input type="checkbox" data-f="redact_pii" ${t.redact_pii ? "checked" : ""}> redact personal data (emails, card numbers, CNIC, phone numbers)</label><label style="display:inline"><input type="checkbox" data-f="cache_enabled" ${t.cache_enabled ? "checked" : ""}> response cache</label></div>
     <div class="sub">Secrets (cloud keys, tokens) are always redacted; prompt injection is always blocked.</div>
     ${termsImportHtml(t.name)}
     <div style="margin-top:8px"><button class="primary" data-save="${esc(t.name)}">Save policy</button> <button class="danger" data-del="${esc(t.name)}">Delete tenant</button></div>
     <h3>API keys</h3>${t.keys.map((k) => `<div class="row" style="align-items:center"><span class="mono">${esc(k.prefix)}...</span><span class="sub">${esc(k.label)}</span>${k.revoked ? chip("revoked", "bad") : `<button class="sm danger" data-rev="${k.id}">Revoke</button>`}${S.meta.demo_keys[t.name] && !k.revoked && k.label === "demo key" ? `<span class="chip">demo key: <span class="mono">${esc(S.meta.demo_keys[t.name])}</span></span>` : ""}</div>`).join("") || `<span class="sub">no keys</span>`}
-    <div style="margin-top:6px"><button class="sm" data-newkey="${esc(t.name)}">New key</button></div></div>`).join("")}
-    <div class="card"><h2>New tenant</h2><div class="row"><div><label>Name</label><input id="nt-name" placeholder="lowercase-name"></div><button class="primary" id="nt-go">Create with first key</button></div><div id="nt-out"></div></div></div>`;
+    <div style="margin-top:6px"><button class="sm" data-newkey="${esc(t.name)}">New key</button></div>${fk && !fk.isNew && fk.tenant === t.name ? keyPanel(fk.tenant, fk.key) : ""}</div>`).join("")}</div>`;
   bindTenantImport(); $$("details.imp").forEach(bindTermsImport);
   const list = (v) => v.split(",").map((x) => x.trim()).filter(Boolean);
   $$("[data-save]").forEach((b) => (b.onclick = guard(async () => { const card = b.closest(".card"), body = {};
@@ -518,20 +599,27 @@ routes.tenants = async (el) => {
     await api("/api/tenants/" + b.dataset.save, "PUT", body); toast("Saved"); route(); })));
   $$("[data-del]").forEach((b) => (b.onclick = guard(async () => { if (confirm("Delete " + b.dataset.del + " and its keys?")) { await api("/api/tenants/" + b.dataset.del, "DELETE"); route(); } })));
   $$("[data-rev]").forEach((b) => (b.onclick = guard(async () => { await api("/api/keys/" + b.dataset.rev, "DELETE"); route(); })));
-  $$("[data-newkey]").forEach((b) => (b.onclick = guard(async () => { const k = await api(`/api/tenants/${b.dataset.newkey}/keys`, "POST", { label: "created in UI" }); prompt("New key (shown only once). Copy it now:", k.key); route(); })));
-  $("#nt-go").onclick = guard(async () => { const t = await api("/api/tenants", "POST", { name: $("#nt-name").value.trim() }); $("#nt-out").innerHTML = `<div class="banner" style="margin-top:8px">Key (shown only once): <span class="mono">${esc(t.first_key.key)}</span></div>`; loadMeta(); });
+  $$("[data-newkey]").forEach((b) => (b.onclick = guard(async () => { const k = await api(`/api/tenants/${b.dataset.newkey}/keys`, "POST", { label: "created in UI" }); freshKey = { tenant: b.dataset.newkey, key: k.key }; await route(); $(".keyout")?.scrollIntoView({ block: "center" }); })));
+  $("#nt-go").onclick = guard(async () => {
+    const name = $("#nt-name").value.trim();
+    if (!name) { $("#nt-out").innerHTML = `<div class="issues err" style="margin-top:8px">Type a name first, for example support-app.</div>`; $("#nt-name").focus(); return; }
+    const t = await api("/api/tenants", "POST", { name }); freshKey = { tenant: t.name || name, key: t.first_key.key, isNew: true }; await route(); });
+  $$("[data-copy]").forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied"); }
+    catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling); getSelection().removeAllRanges(); getSelection().addRange(r); toast("Selected: press Ctrl+C to copy"); }
+  }));
 };
 
 // ---------- simulator
 routes.simulator = async (el) => {
   const sc = S.meta.sim_scenarios, live = await api("/api/sim/live");
-  el.innerHTML = header("Simulator", "Deterministic traffic through the mock provider, so every chart and feature demos offline", simBanner()) + `<div class="grid g2">
-  <div class="card"><h2>Scenarios</h2><div class="sub">Each run backfills virtual time, so a 24 hour day takes seconds. Same seed, same traffic.</div>
+  el.innerHTML = header("Simulator", "Repeatable test traffic through the built-in mock provider, so every page has something to show without a real model", simBanner()) + `<div class="grid g2">
+  <div class="card"><h2>Scenarios</h2><div class="sub">Click a scenario to run it with these numbers. Each run fills in the past hours on a virtual clock, so a 24 hour day takes seconds; the same seed gives the same traffic.</div>
   <div class="row"><div><label>Requests</label><input id="sm-n" type="number" value="600" min="10" max="20000" style="width:90px"></div><div><label>Span (hours)</label><input id="sm-h" type="number" value="24" style="width:80px"></div><div><label>Seed</label><input id="sm-seed" type="number" value="1" style="width:70px"></div></div>
-  <div style="margin-top:8px">${Object.entries(sc).map(([k, v]) => `<div class="scen" data-run="${k}" style="margin-bottom:6px"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join("")}</div></div>
+  <div style="margin-top:8px">${Object.entries(sc).map(([k, v]) => `<button type="button" class="scen" data-run="${k}" style="margin-bottom:6px"><b>${esc(k)}</b><span>${esc(v)}</span></button>`).join("")}</div></div>
   <div><div class="card" style="margin-bottom:14px"><h2>Live traffic</h2><div class="sub">Sends real requests at the chosen rate with the real clock until stopped. Sent so far: <b id="lv-sent">${live.sent}</b></div>
     <div class="row"><div><label>Requests per second</label><input id="lv-rate" type="number" value="${live.rate || 2}" step="0.5" style="width:80px"></div><button class="primary" id="lv-on">${live.on ? "Running" : "Start"}</button><button id="lv-off">Stop</button></div></div>
-  <div class="card" style="margin-bottom:14px"><h2>Result</h2><div id="sm-out"><div class="sub">Pick a scenario.</div></div></div>
+  <div class="card" style="margin-bottom:14px"><h2>Result</h2><div id="sm-out"><div class="sub">Click a scenario to run it; what it did shows here, with links to the pages it filled.</div></div></div>
   <div class="card"><h2>Reset</h2><div class="sub">Clears all recorded calls, alerts, runs and releases. Tenants and keys stay.</div><button class="danger" id="rs">Reset recorded data</button></div></div></div>`;
   $$("[data-run]").forEach((b) => (b.onclick = guard(async () => {
     $("#sm-out").innerHTML = `<div class="sub">Running ${esc(b.dataset.run)}...</div>`;
@@ -550,7 +638,7 @@ routes.simulator = async (el) => {
 function wrapTables(root) {
   $$("table", root).forEach((t) => { if (!t.parentElement.classList.contains("scroll")) { const w = document.createElement("div"); w.className = "scroll"; t.replaceWith(w); w.appendChild(t); } });
 }
-new MutationObserver(() => wrapTables($("#main"))).observe($("#main"), { childList: true, subtree: true });
+new MutationObserver(() => { wrapTables($("#main")); drawCharts($("#main")); }).observe($("#main"), { childList: true, subtree: true });
 let savedTheme = null; try { savedTheme = localStorage.getItem("lcr-theme"); } catch { /* storage blocked */ }
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 window.addEventListener("hashchange", route);
