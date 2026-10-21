@@ -6,6 +6,8 @@ Apps call one OpenAI-compatible endpoint. The control room authenticates the ten
 
 **See it:** [showcase page with every screen](https://llm-control-room.vercel.app) · [Kaggle notebook running the engine](https://www.kaggle.com/code/muhammadhammas13/llm-control-room-demo)
 
+**Demo video:** [llm-control-room-demo.mp4](docs/demo/llm-control-room-demo.mp4) (narrated, subtitled) · [user manual (PDF)](docs/demo/llm-control-room-manual.pdf)
+
 ## What it does
 
 - **Gateway**: one OpenAI-compatible `/v1/chat/completions` endpoint with per-tenant API keys.

@@ -1,0 +1,5 @@
+n | obs_ms | routing_ms | chat_p50 | chat_p95 | chat_p50_obs | chat_p95_obs | chat_max_obs | chat_rps_obs | obs_during | export_ms | export_rows | chat_p50_export | chat_p95_export | chat_max_export | exports_during
+30000 | 426.7 | 179.6 | 6.7 | 18.7 | 8.4 | 23.4 | 42.2 | 99.5 | 2 | 723.1 | 30300 | 8.6 | 55.5 | 119.8 | 2
+  (pool of 4379 real rows, built in 25.7 s; pages vs reference: not checked)
+300000 | 3578.2 | 1567.9 | 20.2 | 25.8 | 24.5 | 67.5 | 326.3 | 28.7 | 1 | 3048.0 | 100000 | 59.2 | 83.1 | 270.6 | 3
+  (pool of 4379 real rows, built in 21.9 s; pages vs reference: not checked)
