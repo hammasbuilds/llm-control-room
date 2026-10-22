@@ -40,7 +40,9 @@ src["agent_limit_usd"] = json.loads(out["agent-limits"])["max_usd"]
 m = re.search(r"GOT THROUGH\s+(\d+) OF (\d+)\s+(\d+) OF (\d+)", out["sandbox"], re.I)
 src["sub_through"], src["attacks"], src["res_through"] = m.group(1), m.group(2), m.group(3)
 lines = (ROOT / "docs" / "bench-obs-output.txt").read_text(encoding="utf-8").splitlines()
-i = next(i for i, ln in enumerate(lines) if ln.startswith("n |"))
+i = max(i for i, ln in enumerate(lines) if ln.startswith("n |"))
+check(lines[i - 1].startswith("## median of 3 runs"), "bench file: last table is the median")
+check(sum(ln.startswith("## run ") for ln in lines) == 3, "bench file: three runs saved")
 cols = [c.strip() for c in lines[i].split("|")]
 rows = [
     dict(zip(cols, (v.strip() for v in ln.split("|")), strict=True))
@@ -129,6 +131,17 @@ pdf = (DEMO / f"{REPO}-manual.pdf").read_bytes()
 pages = len(re.findall(rb"/Type\s*/Page[^s]", pdf))
 check(pages == len(run["scenes"]) + 1, f"manual has {pages} pages (cover + one per scene)")
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
+perf = (
+    "- **Performance**: measured by `scripts/bench_obs.py` on a shared desktop while other work "
+    "was running (median of three runs, all in "
+    "[docs/bench-obs-output.txt](docs/bench-obs-output.txt); one process, in-process client): "
+    f"with {src['bench_n']} calls in the window the Observability page builds in "
+    f"{float(big['obs_ms']) / 1000:.1f} s and the Router page in "
+    f"{float(big['routing_ms']) / 1000:.1f} s, and the gateway keeps serving about "
+    f"{src['bench_rps']} chat requests a second (p95 {src['bench_p95']} ms) while the "
+    "Observability page is requested back to back."
+)
+check(perf in readme, "README Performance line matches the median in docs/bench-obs-output.txt")
 check(
     f"**Demo video:** [{REPO}-demo.mp4](docs/demo/{REPO}-demo.mp4) (narrated, subtitled) · "
     f"[user manual (PDF)](docs/demo/{REPO}-manual.pdf)" in readme,

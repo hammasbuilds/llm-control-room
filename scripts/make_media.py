@@ -487,7 +487,8 @@ def cut(video: str, timing: list[dict], out: str) -> list[dict]:
 def bench_row() -> dict:
     """The largest-N row of docs/bench-obs-output.txt (written by scripts/bench_obs.py)."""
     lines = (ROOT / "docs" / "bench-obs-output.txt").read_text(encoding="utf-8").splitlines()
-    i = next(i for i, ln in enumerate(lines) if ln.startswith("n |"))
+    # the last table is the median of the runs (scripts/bench_obs_median.py)
+    i = max(i for i, ln in enumerate(lines) if ln.startswith("n |"))
     cols = [c.strip() for c in lines[i].split("|")]
     rows = [
         dict(zip(cols, (v.strip() for v in ln.split("|")), strict=True))
@@ -536,7 +537,8 @@ def post_text(n: dict) -> str:
         f"{n['res_through']} of {n['attacks']} got through the restricted profile.\n"
         f"- With {n['bench_n']} calls in the window, the gateway kept serving about "
         f"{n['bench_rps']} chat requests a second (p95 {n['bench_p95']} ms) while the "
-        "observability page was refreshed back to back.\n\n"
+        "observability page was refreshed back to back (median of three runs on a shared "
+        "machine).\n\n"
         "Demo video and user manual are in the repo.\n"
         "Code: https://github.com/hammasbuilds/llm-control-room\n"
         "Every screen: https://llm-control-room.vercel.app\n\n"
@@ -673,7 +675,8 @@ def main() -> int:
             f"An agent run was stopped at its ${n['agent_limit_usd']} cost limit.",
             f"With {n['bench_n']} calls in the window the gateway kept serving about "
             f"{n['bench_rps']} chat requests a second (p95 {n['bench_p95']} ms) while the "
-            "observability page was refreshed back to back.",
+            "observability page was refreshed back to back (median of three runs on a "
+            "shared machine, measured while other work was running).",
         ],
         repo_url="https://github.com/hammasbuilds/llm-control-room",
         demo_note="https://llm-control-room.vercel.app (every screen) and a narrated "

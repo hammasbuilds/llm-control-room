@@ -1,44 +1,44 @@
 1
-00:00:03,854 --> 00:00:17,677
+00:00:03,878 --> 00:00:17,700
 Overview: one request through the gateway
 
 2
-00:00:20,764 --> 00:00:30,127
+00:00:20,772 --> 00:00:30,135
 Try it: an API key and an email are redacted before the call
 
 3
-00:00:33,212 --> 00:00:42,165
+00:00:33,219 --> 00:00:42,172
 Try it: a prompt injection is blocked, no model is called
 
 4
-00:00:45,882 --> 00:00:53,366
+00:00:45,793 --> 00:00:53,276
 Tenants: a new tenant with its own key and a ready curl command
 
 5
-00:00:56,078 --> 00:01:04,571
+00:00:55,959 --> 00:01:04,452
 The curl command was run from a terminal; the tenant's spend updates
 
 6
-00:01:08,730 --> 00:01:17,943
+00:01:08,925 --> 00:01:18,138
 Playground: a file of prompts, one row per result
 
 7
-00:01:22,077 --> 00:01:31,620
+00:01:22,231 --> 00:01:31,773
 Router: what the same traffic would cost on the biggest model
 
 8
-00:01:36,674 --> 00:01:44,742
+00:01:36,853 --> 00:01:44,921
 Observability: cost, latency percentiles and prompt drift
 
 9
-00:01:48,841 --> 00:01:56,959
+00:01:49,037 --> 00:01:57,156
 Releases: a bad canary is rolled back automatically
 
 10
-00:02:01,818 --> 00:02:10,196
+00:02:01,897 --> 00:02:10,275
 Agent runs: the run stops at its cost limit
 
 11
-00:02:14,279 --> 00:02:24,437
+00:02:14,383 --> 00:02:24,541
 Sandbox: twelve attacks against each hardening profile
 

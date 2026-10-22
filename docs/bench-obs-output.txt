@@ -1,5 +1,31 @@
+# scripts/bench_obs.py, 3 runs, started 2026-10-22T01:18
+# Measured on a shared desktop (Windows 11, CPU only) while other work was running on it,
+# so absolute figures move between runs; the CPU load sampled around each run is noted.
+# Times in ms; chat_rps_obs = chat requests a second while /api/obs is requested back to
+# back. The last table is the per-column median of the runs and is what the README quotes.
+
+## run 1 of 3 (machine CPU load before 96%, after 51%)
 n | obs_ms | routing_ms | chat_p50 | chat_p95 | chat_p50_obs | chat_p95_obs | chat_max_obs | chat_rps_obs | obs_during | export_ms | export_rows | chat_p50_export | chat_p95_export | chat_max_export | exports_during
-30000 | 426.7 | 179.6 | 6.7 | 18.7 | 8.4 | 23.4 | 42.2 | 99.5 | 2 | 723.1 | 30300 | 8.6 | 55.5 | 119.8 | 2
-  (pool of 4379 real rows, built in 25.7 s; pages vs reference: not checked)
-300000 | 3578.2 | 1567.9 | 20.2 | 25.8 | 24.5 | 67.5 | 326.3 | 28.7 | 1 | 3048.0 | 100000 | 59.2 | 83.1 | 270.6 | 3
-  (pool of 4379 real rows, built in 21.9 s; pages vs reference: not checked)
+30000 | 492.5 | 208.3 | 9.7 | 11.9 | 9.9 | 44.2 | 630.1 | 46.9 | 2 | 1360.8 | 30300 | 12.8 | 108.2 | 268.0 | 3
+  (pool of 4379 real rows, built in 23.8 s; pages vs reference: not checked)
+300000 | 4975.0 | 2571.3 | 25.6 | 46.6 | 27.9 | 53.2 | 1230.4 | 20.8 | 1 | 4168.5 | 100000 | 80.4 | 126.8 | 433.2 | 3
+  (pool of 4379 real rows, built in 42.7 s; pages vs reference: not checked)
+
+## run 2 of 3 (machine CPU load before 76%, after 51%)
+n | obs_ms | routing_ms | chat_p50 | chat_p95 | chat_p50_obs | chat_p95_obs | chat_max_obs | chat_rps_obs | obs_during | export_ms | export_rows | chat_p50_export | chat_p95_export | chat_max_export | exports_during
+30000 | 457.1 | 177.9 | 8.0 | 12.3 | 10.6 | 44.4 | 98.8 | 66.9 | 2 | 994.6 | 30300 | 10.0 | 97.3 | 198.8 | 2
+  (pool of 4379 real rows, built in 22.4 s; pages vs reference: not checked)
+300000 | 4406.7 | 1799.6 | 17.9 | 28.8 | 23.6 | 38.4 | 830.2 | 25.5 | 1 | 3051.1 | 100000 | 60.4 | 144.9 | 377.2 | 3
+  (pool of 4379 real rows, built in 38.5 s; pages vs reference: not checked)
+
+## run 3 of 3 (machine CPU load before 73%, after 68%)
+n | obs_ms | routing_ms | chat_p50 | chat_p95 | chat_p50_obs | chat_p95_obs | chat_max_obs | chat_rps_obs | obs_during | export_ms | export_rows | chat_p50_export | chat_p95_export | chat_max_export | exports_during
+30000 | 463.9 | 192.4 | 7.0 | 9.8 | 9.7 | 48.5 | 413.5 | 53.6 | 3 | 867.8 | 30300 | 10.5 | 93.7 | 218.8 | 3
+  (pool of 4379 real rows, built in 21.7 s; pages vs reference: not checked)
+300000 | 4268.6 | 1830.3 | 18.8 | 25.2 | 25.7 | 46.5 | 847.5 | 23.9 | 1 | 2842.8 | 100000 | 65.4 | 141.0 | 336.0 | 3
+  (pool of 4379 real rows, built in 39.5 s; pages vs reference: not checked)
+
+## median of 3 runs
+n | obs_ms | routing_ms | chat_p50 | chat_p95 | chat_p50_obs | chat_p95_obs | chat_max_obs | chat_rps_obs | obs_during | export_ms | export_rows | chat_p50_export | chat_p95_export | chat_max_export | exports_during
+30000 | 463.9 | 192.4 | 8.0 | 11.9 | 9.9 | 44.4 | 413.5 | 53.6 | 2 | 994.6 | 30300 | 10.5 | 97.3 | 218.8 | 3
+300000 | 4406.7 | 1830.3 | 18.8 | 28.8 | 25.7 | 46.5 | 847.5 | 23.9 | 1 | 3051.1 | 100000 | 65.4 | 141.0 | 377.2 | 3

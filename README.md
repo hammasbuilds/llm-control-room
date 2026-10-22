@@ -162,7 +162,7 @@ The **About and guide** page (nav entry, and the "?" by the logo) covers what it
 - **Observability**: latency percentiles, grounding scores, PSI drift over prompt shape (no prompts stored)
 - **Sandbox**: subprocess profiles with an audit hook, optional Docker hardening
 - **Frontend**: vanilla JavaScript, HTML and CSS with SVG charts, no build step; light and dark themes
-- **Performance**: measured by `scripts/bench_obs.py` (one process, in-process client): with 300,000 calls in the window the Observability page builds in 2.4 s and the Router page in 1.1 s, and the gateway keeps serving about 52 chat requests a second (p95 26 ms) while the Observability page is requested back to back.
+- **Performance**: measured by `scripts/bench_obs.py` on a shared desktop while other work was running (median of three runs, all in [docs/bench-obs-output.txt](docs/bench-obs-output.txt); one process, in-process client): with 300,000 calls in the window the Observability page builds in 4.4 s and the Router page in 1.8 s, and the gateway keeps serving about 24 chat requests a second (p95 46.5 ms) while the Observability page is requested back to back.
 - **Tooling**: uv, pytest, ruff, Playwright for the UI audit and gallery
 
 ## Run it
